@@ -1,0 +1,40 @@
+version: "3"
+
+vars:
+  CLUSTER_NAME: platform-lab
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  tools:check:
+    desc: Check required development tools
+    cmds:
+      - java --version
+      - docker --version
+      - kubectl version --client
+      - kind version
+      - task --version
+
+  cluster:create:
+    desc: Create the local Kind cluster
+    cmds:
+      - kind create cluster
+        --name {{.CLUSTER_NAME}}
+        --config cluster/kind/cluster.yaml
+    status:
+      - kind get clusters | grep -q "^{{.CLUSTER_NAME}}$"
+
+  cluster:delete:
+    desc: Delete the local Kind cluster
+    cmds:
+      - kind delete cluster --name {{.CLUSTER_NAME}}
+
+  cluster:status:
+    desc: Show local Kubernetes cluster status
+    cmds:
+      - kubectl cluster-info
+      - kubectl get nodes
+      - kubectl get pods -A

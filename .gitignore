@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# IntelliJ
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Java / Maven
+target/
+*.class
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+
+# Local temporary files
+tmp/
+.temp/

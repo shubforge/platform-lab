@@ -2,6 +2,7 @@ version: "3"
 
 vars:
   CLUSTER_NAME: platform-lab
+  OPERATOR_IMAGE: greeting-operator:dev
 
 tasks:
   default:
@@ -78,3 +79,51 @@ tasks:
     desc: Run Greeting operator locally
     cmds:
       - ./mvnw -f operators/greeting-operator/pom.xml compile exec:java
+
+
+  operator:image:build:
+    desc: Build Greeting operator Docker image
+    deps:
+      - operator:build
+    cmds:
+      - docker build
+        -t {{.OPERATOR_IMAGE}}
+        operators/greeting-operator
+
+  operator:image:load:
+    desc: Load Greeting operator image into Kind
+    cmds:
+      - kind load docker-image
+        {{.OPERATOR_IMAGE}}
+        --name {{.CLUSTER_NAME}}
+
+
+  operator:deploy:
+    desc: Deploy Greeting operator into Kubernetes
+    cmds:
+      - kubectl apply -f k8s/operator/namespace.yaml
+      - kubectl apply -f k8s/operator/service-account.yaml
+      - kubectl apply -f k8s/operator/rbac.yaml
+      - kubectl apply -f k8s/operator/deployment.yaml
+
+  operator:undeploy:
+    desc: Remove Greeting operator from Kubernetes
+    cmds:
+      - kubectl delete -f k8s/operator/deployment.yaml --ignore-not-found
+      - kubectl delete -f k8s/operator/rbac.yaml --ignore-not-found
+      - kubectl delete -f k8s/operator/service-account.yaml --ignore-not-found
+      - kubectl delete -f k8s/operator/namespace.yaml --ignore-not-found
+
+  operator:status:
+    desc: Show Greeting operator status
+    cmds:
+      - kubectl get pods -n platform-system
+      - kubectl get deployment greeting-operator -n platform-system
+
+  operator:logs:
+    desc: Follow Greeting operator logs
+    cmds:
+      - kubectl logs
+        -n platform-system
+        deployment/greeting-operator
+        -f

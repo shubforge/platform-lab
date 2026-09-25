@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: greeting-operator
+  namespace: platform-system
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: greeting-operator
+
+  template:
+
+    metadata:
+      labels:
+        app: greeting-operator
+
+    spec:
+
+      serviceAccountName: greeting-operator
+
+      containers:
+
+        - name: greeting-operator
+
+          image: greeting-operator:dev
+
+          imagePullPolicy: IfNotPresent
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+
+            limits:
+              cpu: 500m
+              memory: 512Mi

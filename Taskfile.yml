@@ -65,6 +65,11 @@ tasks:
     cmds:
       - kubectl describe greeting hello
 
+  greeting:status:
+    desc: Show Greeting including operator status
+    cmds:
+      - kubectl get greeting hello -o yaml
+
   greeting:delete:
     desc: Delete sample Greeting
     cmds:

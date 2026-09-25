@@ -38,3 +38,33 @@ tasks:
       - kubectl cluster-info
       - kubectl get nodes
       - kubectl get pods -A
+
+  crd:install:
+    desc: Install platform CRDs
+    cmds:
+      - kubectl apply -f k8s/crds/
+
+  crd:delete:
+    desc: Delete platform CRDs
+    cmds:
+      - kubectl delete -f k8s/crds/ --ignore-not-found
+
+  greeting:create:
+    desc: Create sample Greeting resource
+    cmds:
+      - kubectl apply -f k8s/samples/greeting.yaml
+
+  greeting:get:
+    desc: List Greeting resources
+    cmds:
+      - kubectl get greetings
+
+  greeting:describe:
+    desc: Describe the sample Greeting
+    cmds:
+      - kubectl describe greeting hello
+
+  greeting:delete:
+    desc: Delete sample Greeting
+    cmds:
+      - kubectl delete -f k8s/samples/greeting.yaml --ignore-not-found

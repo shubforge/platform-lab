@@ -1,0 +1,8 @@
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Greeting
+
+metadata:
+  name: hello
+
+spec:
+  message: "Hello from Platform Lab"

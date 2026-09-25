@@ -5,4 +5,4 @@ metadata:
   name: hello
 
 spec:
-  message: "Hello from Platform Lab"
+  message: "Hello from the updated Greeting"

@@ -12,7 +12,8 @@ The goal of this project is to learn by building.
 - [x] Taskfile
 - [x] Local Kind cluster
 - [x] Greeting CRD
-- [ ] Greeting Operator
+- [x] Java Greeting Controller
+- [x] ConfigMap creation from Greeting
 - [ ] Reconciliation
 - [ ] Operator integration tests
 - [ ] GitHub Actions
@@ -55,6 +56,40 @@ If the required Java version is not installed:
 sdk env install
 ```
 
+---
+
+## Maven
+
+The project uses Maven Wrapper from the repository root:
+
+```text
+platform-lab/
+├── .mvn/
+├── mvnw
+├── mvnw.cmd
+└── ...
+```
+
+The Greeting operator has its own Maven project:
+
+```text
+operators/greeting-operator/pom.xml
+```
+
+Because the Maven Wrapper is maintained at the repository root, the operator can be built directly using:
+
+```bash
+./mvnw -f operators/greeting-operator/pom.xml clean package
+```
+
+Normally this does not need to be run manually because the Taskfile provides simpler commands such as:
+
+```bash
+task operator:build
+```
+
+---
+
 ## Local Kubernetes Cluster
 
 The project uses [Kind](https://kind.sigs.k8s.io/) for running a local Kubernetes cluster.
@@ -96,6 +131,9 @@ platform-lab/
 ├── .github/
 │   └── workflows/
 │
+├── .mvn/
+│   └── wrapper/
+│
 ├── cluster/
 │   └── kind/
 │       └── cluster.yaml
@@ -109,9 +147,28 @@ platform-lab/
 │   └── samples/
 │       └── greeting.yaml
 │
+├── operators/
+│   └── greeting-operator/
+│       ├── pom.xml
+│       └── src/
+│           └── main/
+│               └── java/
+│                   └── dev/
+│                       └── shubforge/
+│                           └── platform/
+│                               └── greeting/
+│                                   ├── Greeting.java
+│                                   ├── GreetingSpec.java
+│                                   ├── GreetingStatus.java
+│                                   ├── GreetingReconciler.java
+│                                   ├── GreetingConfigMapDependentResource.java
+│                                   └── GreetingOperatorApplication.java
+│
 ├── .editorconfig
 ├── .gitignore
 ├── .sdkmanrc
+├── mvnw
+├── mvnw.cmd
 ├── README.md
 └── Taskfile.yml
 ```
@@ -141,7 +198,7 @@ Secret
 But Kubernetes does not initially know what a resource such as this means:
 
 ```yaml
-apiVersion: platform.example.dev/v1alpha1
+apiVersion: platform.shubforge.dev/v1alpha1
 kind: Greeting
 
 metadata:
@@ -168,7 +225,7 @@ Greeting
 with the API version:
 
 ```text
-platform.example.dev/v1alpha1
+platform.shubforge.dev/v1alpha1
 ```
 
 The first version is named `v1alpha1` because the API is still experimental and will evolve as the project grows.
@@ -189,7 +246,7 @@ This means Kubernetes can validate the custom resource before storing it.
 For example, this is valid:
 
 ```yaml
-apiVersion: platform.example.dev/v1alpha1
+apiVersion: platform.shubforge.dev/v1alpha1
 kind: Greeting
 
 metadata:
@@ -224,13 +281,13 @@ kubectl get crds
 You should see the Greeting CRD:
 
 ```text
-greetings.platform.example.dev
+greetings.platform.shubforge.dev
 ```
 
 You can also inspect it:
 
 ```bash
-kubectl describe crd greetings.platform.example.dev
+kubectl describe crd greetings.platform.shubforge.dev
 ```
 
 ## Create a Greeting
@@ -360,31 +417,346 @@ This will also introduce one of the most important concepts behind Kubernetes co
 
 ---
 
-# Available Tasks
+# Greeting Controller
 
-The project uses Task to keep common development commands in one place.
+Creating a CRD gives Kubernetes a new API, but it does not add any behavior.
 
-List all available tasks:
+Without a controller, the flow is simply:
 
-```bash
-task
+```text
+Greeting
+    |
+    v
+Kubernetes API
+    |
+    v
+Stored
 ```
 
-or:
+The next step is therefore to build something that reacts to a `Greeting`.
+
+For the first controller, Platform Lab uses Java and the Java Operator SDK.
+
+The controller watches `Greeting` resources and manages a ConfigMap for each Greeting.
+
+The flow now becomes:
+
+```text
+Greeting
+    |
+    v
+Greeting Controller
+    |
+    v
+ConfigMap
+```
+
+For example:
+
+```yaml
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Greeting
+
+metadata:
+  name: hello
+
+spec:
+  message: "Hello from Platform Lab"
+```
+
+results in a ConfigMap similar to:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: hello-greeting
+
+data:
+  message: "Hello from Platform Lab"
+```
+
+---
+
+## Greeting Java Model
+
+The Kubernetes custom resource is represented in Java by the `Greeting` class.
+
+Conceptually:
+
+```java
+@Group("platform.shubforge.dev")
+@Version("v1alpha1")
+@Kind("Greeting")
+@Plural("greetings")
+public class Greeting
+        extends CustomResource<GreetingSpec, GreetingStatus>
+        implements Namespaced {
+}
+```
+
+`GreetingSpec` represents the `spec` section of the Kubernetes resource.
+
+For now it contains only:
+
+```java
+private String message;
+```
+
+`GreetingStatus` is currently empty and will be expanded later when controller status handling is introduced.
+
+---
+
+## Greeting Controller
+
+The controller is implemented by:
+
+```text
+GreetingReconciler.java
+```
+
+It watches `Greeting` resources.
+
+The desired ConfigMap is defined by:
+
+```text
+GreetingConfigMapDependentResource.java
+```
+
+Instead of manually writing logic such as:
+
+```text
+if ConfigMap does not exist
+    create it
+
+if ConfigMap changed
+    update it
+```
+
+the controller describes the desired ConfigMap.
+
+The operator framework then works toward keeping the actual Kubernetes state aligned with that desired state.
+
+This introduces the foundation for Kubernetes reconciliation.
+
+---
+
+## Build the Controller
+
+Build the Java operator using:
+
+```bash
+task operator:build
+```
+
+Internally, the Taskfile runs:
+
+```bash
+./mvnw \
+  -f operators/greeting-operator/pom.xml \
+  clean package
+```
+
+Keeping this command inside the Taskfile means developers do not need to remember where the operator `pom.xml` is located.
+
+---
+
+## Run the Controller Locally
+
+For now, the controller runs as a Java process outside Kubernetes.
+
+Start it using:
+
+```bash
+task operator:run
+```
+
+The current architecture looks like:
+
+```text
+Mac
+ |
+ | Java Process
+ |
+ | Greeting Controller
+ |
+ | kubeconfig
+ v
+Kind Kubernetes Cluster
+```
+
+The controller uses the local Kubernetes configuration to connect to the same cluster used by `kubectl`.
+
+The operator is not yet deployed inside Kubernetes.
+
+That will be added later with:
+
+```text
+Docker Image
+     |
+     v
+Kubernetes Deployment
+     |
+     v
+ServiceAccount
+     |
+     v
+RBAC
+```
+
+---
+
+# Running the Complete Example
+
+Start the local cluster:
+
+```bash
+task cluster:create
+```
+
+Install the CRD:
+
+```bash
+task crd:install
+```
+
+Build the Java controller:
+
+```bash
+task operator:build
+```
+
+Run the controller:
+
+```bash
+task operator:run
+```
+
+Keep this terminal running.
+
+Open another terminal and create a Greeting:
+
+```bash
+task greeting:create
+```
+
+Check the Greeting:
+
+```bash
+task greeting:get
+```
+
+Now check the generated ConfigMap:
+
+```bash
+kubectl get configmaps
+```
+
+You should see something similar to:
+
+```text
+NAME             DATA   AGE
+hello-greeting   1      10s
+```
+
+Inspect it:
+
+```bash
+kubectl get configmap hello-greeting -o yaml
+```
+
+The ConfigMap should contain:
+
+```yaml
+data:
+  message: Hello from Platform Lab
+```
+
+The complete flow is now:
+
+```text
+Greeting YAML
+     |
+     v
+Kubernetes API
+     |
+     v
+Greeting Resource
+     |
+     v
+Greeting Controller
+     |
+     v
+Desired ConfigMap
+     |
+     v
+hello-greeting
+```
+
+---
+
+# Testing Reconciliation
+
+One interesting experiment is to manually delete the generated ConfigMap:
+
+```bash
+kubectl delete configmap hello-greeting
+```
+
+Then check again:
+
+```bash
+kubectl get configmaps
+```
+
+The controller should reconcile the state and recreate the ConfigMap.
+
+Another experiment is to update the Greeting:
+
+```yaml
+spec:
+  message: "Hello from the updated Greeting"
+```
+
+Apply it again:
+
+```bash
+task greeting:create
+```
+
+Then inspect the ConfigMap:
+
+```bash
+kubectl get configmap hello-greeting -o yaml
+```
+
+The ConfigMap should move toward the new desired state.
+
+These scenarios will be explored further as reconciliation support is developed and tested.
+
+---
+# Taskfile
+
+The project uses a root `Taskfile.yml` to provide a common developer interface.
+
+Instead of remembering individual Kind, kubectl, and Maven commands, common operations can be run using `task`.
+
+List all available tasks:
 
 ```bash
 task --list
 ```
 
-### Development Tools
+## Tooling
 
-Check locally installed tools:
+Check required tools:
 
 ```bash
 task tools:check
 ```
 
-### Cluster
+## Cluster
 
 Create the cluster:
 
@@ -404,7 +776,7 @@ Delete the cluster:
 task cluster:delete
 ```
 
-### Custom Resources
+## CRDs
 
 Install CRDs:
 
@@ -418,7 +790,7 @@ Delete CRDs:
 task crd:delete
 ```
 
-### Greeting
+## Greeting
 
 Create the sample Greeting:
 
@@ -444,20 +816,67 @@ Delete the sample Greeting:
 task greeting:delete
 ```
 
+## Operator
+
+Build the Greeting operator:
+
+```bash
+task operator:build
+```
+
+Run the Greeting operator locally:
+
+```bash
+task operator:run
+```
+
+---
+
+# What We Have So Far
+
+The project started with:
+
+```text
+CustomResourceDefinition
+        |
+        v
+Greeting
+```
+
+It has now evolved into:
+
+```text
+CustomResourceDefinition
+        |
+        v
+Greeting
+        |
+        v
+Java Controller
+        |
+        v
+ConfigMap
+```
+
+This is the first complete controller flow in Platform Lab.
+
 ---
 
 # What's Next?
 
-The next step is to build the first Kubernetes controller.
+The next steps are to explore the controller lifecycle in more detail.
 
-The Greeting controller will:
+This includes:
 
-1. Watch `Greeting` resources.
-2. Read the message from the Greeting specification.
-3. Create a ConfigMap containing that message.
-4. Keep the ConfigMap synchronized with the Greeting.
-5. Recreate the ConfigMap if it is manually deleted.
+- updating managed resources when a Greeting changes
+- recreating resources when they are deleted
+- understanding owner references
+- understanding reconciliation
+- adding automated tests
+- packaging the operator as a Docker image
+- adding Kubernetes RBAC
+- running the operator inside the Kubernetes cluster
 
-This will help explore how Kubernetes controllers continuously reconcile the desired state with the actual state.
+After that, the same ideas can gradually be applied to more useful platform APIs.
 
-The project will gradually expand from this simple example toward higher-level platform APIs and abstractions.
+The simple `Greeting` resource is only the starting point.

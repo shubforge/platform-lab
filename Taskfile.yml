@@ -68,3 +68,13 @@ tasks:
     desc: Delete sample Greeting
     cmds:
       - kubectl delete -f k8s/samples/greeting.yaml --ignore-not-found
+
+  operator:build:
+    desc: Build Greeting operator
+    cmds:
+      - ./mvnw -f operators/greeting-operator/pom.xml clean package
+
+  operator:run:
+    desc: Run Greeting operator locally
+    cmds:
+      - ./mvnw -f operators/greeting-operator/pom.xml compile exec:java

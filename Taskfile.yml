@@ -75,6 +75,11 @@ tasks:
     cmds:
       - kubectl delete -f k8s/samples/greeting.yaml --ignore-not-found
 
+  greeting:events:
+    desc: Show events for the sample Greeting
+    cmds:
+      - kubectl describe greeting hello
+
   operator:build:
     desc: Build Greeting operator
     cmds:
@@ -132,3 +137,12 @@ tasks:
         -n platform-system
         deployment/greeting-operator
         -f
+  operator:restart:
+    desc: Restart Greeting operator and wait for rollout
+    cmds:
+      - kubectl rollout restart
+        deployment/greeting-operator
+        -n platform-system
+      - kubectl rollout status
+        deployment/greeting-operator
+        -n platform-system

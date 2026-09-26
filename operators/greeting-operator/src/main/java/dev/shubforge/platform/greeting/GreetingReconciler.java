@@ -41,10 +41,11 @@ public class GreetingReconciler
         var generation =
             greeting.getMetadata().getGeneration();
 
-        var previousStatus =
-            greeting.getStatus();
+        var status = greeting.getStatus();
 
-        var status = new GreetingStatus();
+        if (status == null) {
+            status = new GreetingStatus();
+        }
 
         status.setObservedGeneration(generation);
 
@@ -54,64 +55,136 @@ public class GreetingReconciler
 
         status.setConditions(
             List.of(
-                createReadyCondition(
-                    previousStatus,
+                createCondition(
+                    status,
                     generation,
-                    configMap.getMetadata().getName()
+                    "True",
+                    "ConfigMapReady",
+                    "Managed ConfigMap "
+                        + configMap.getMetadata().getName()
+                        + " is in the desired state"
                 )
             )
         );
 
         greeting.setStatus(status);
 
+        context.eventRecorder().normal(
+            "Reconciled",
+            "Managed ConfigMap "
+                + configMap.getMetadata().getName()
+                + " is in the desired state"
+        );
+
         log.info(
-            "Reconciled Greeting {}/{} -> {}",
+            "Reconciled Greeting {}/{}",
             greeting.getMetadata().getNamespace(),
-            greeting.getMetadata().getName(),
-            configMap.getMetadata().getName()
+            greeting.getMetadata().getName()
         );
 
         return UpdateControl.patchStatus(greeting);
     }
 
-    private Condition createReadyCondition(
-        GreetingStatus previousStatus,
+    private Condition createCondition(
+        GreetingStatus currentStatus,
         Long generation,
-        String configMapName) {
+        String conditionStatus,
+        String reason,
+        String message) {
 
-        var previousConditions =
-            previousStatus == null
-                || previousStatus.getConditions() == null
+        var existingConditions =
+            currentStatus == null
+                || currentStatus.getConditions() == null
                 ? List.<Condition>of()
-                : previousStatus.getConditions();
+                : currentStatus.getConditions();
 
-        Optional<Condition> previousReady =
-            previousConditions.stream()
+        var previousReady =
+            existingConditions.stream()
                 .filter(condition ->
                     "Ready".equals(condition.getType()))
                 .findFirst();
 
-        var lastTransitionTime =
+        var previousStatus =
             previousReady
-                .filter(condition ->
-                    "True".equals(condition.getStatus()))
-                .map(Condition::getLastTransitionTime)
-                .orElseGet(() ->
-                    OffsetDateTime
-                        .now(ZoneOffset.UTC)
-                        .toString());
+                .map(Condition::getStatus)
+                .orElse(null);
+
+        var lastTransitionTime =
+            previousReady.isPresent()
+                && conditionStatus.equals(previousStatus)
+                ? previousReady.get().getLastTransitionTime()
+                : OffsetDateTime
+                .now(ZoneOffset.UTC)
+                .toString();
 
         return new ConditionBuilder()
             .withType("Ready")
-            .withStatus("True")
+            .withStatus(conditionStatus)
             .withObservedGeneration(generation)
-            .withReason("ConfigMapReady")
-            .withMessage(
-                "Managed ConfigMap "
-                    + configMapName
-                    + " is in the desired state"
-            )
+            .withReason(reason)
+            .withMessage(message)
             .withLastTransitionTime(lastTransitionTime)
             .build();
+    }
+
+    @Override
+    public ErrorStatusUpdateControl<Greeting> updateErrorStatus(
+        Greeting greeting,
+        Context<Greeting> context,
+        Exception exception) {
+
+        var generation =
+            greeting.getMetadata().getGeneration();
+
+        var status = greeting.getStatus();
+
+        if (status == null) {
+            status = new GreetingStatus();
+        }
+
+        status.setObservedGeneration(generation);
+
+        var message = errorMessage(exception);
+
+        status.setConditions(
+            List.of(
+                createCondition(
+                    status,
+                    generation,
+                    "False",
+                    "ReconciliationFailed",
+                    message
+                )
+            )
+        );
+
+        greeting.setStatus(status);
+
+        context.eventRecorder().warn(
+            "ReconciliationFailed",
+            message
+        );
+
+        log.error(
+            "Failed to reconcile Greeting {}/{}",
+            greeting.getMetadata().getNamespace(),
+            greeting.getMetadata().getName(),
+            exception
+        );
+
+        return ErrorStatusUpdateControl.patchStatus(greeting);
+    }
+
+    private String errorMessage(Exception exception) {
+
+        var message = exception.getMessage();
+
+        if (message == null || message.isBlank()) {
+            return "Greeting reconciliation failed";
+        }
+
+        return message.length() > 500
+            ? message.substring(0, 500)
+            : message;
     }
 }

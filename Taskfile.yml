@@ -3,6 +3,7 @@ version: "3"
 vars:
   CLUSTER_NAME: platform-lab
   OPERATOR_IMAGE: greeting-operator:dev
+  GREETING_NAME: hello
 
 tasks:
   default:
@@ -79,6 +80,14 @@ tasks:
     desc: Show events for the sample Greeting
     cmds:
       - kubectl describe greeting hello
+
+  greeting:reconcile:
+    desc: Manually trigger Greeting reconciliation
+    cmds:
+      - |
+        kubectl annotate greeting {{.GREETING_NAME}} \
+          platform.shubforge.dev/reconcile-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --overwrite
 
   operator:build:
     desc: Build Greeting operator

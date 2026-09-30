@@ -13,6 +13,8 @@ It is a small learning project used to understand:
 - failure handling
 - retry behavior
 - Kubernetes Events
+- manual reconciliation
+- event filtering
 
 The operator is written in Java using the Java Operator SDK.
 
@@ -65,7 +67,7 @@ data:
   message: "Hello from Platform Lab"
 ```
 
-The operator also reports its state back through the `Greeting.status` field.
+The operator also reports its current state through `Greeting.status`.
 
 ---
 
@@ -156,7 +158,7 @@ protected ConfigMap desired(
 }
 ```
 
-The controller declares what should exist rather than manually implementing separate create and update flows.
+The controller declares the desired resource instead of manually implementing separate create and update flows.
 
 ---
 
@@ -180,7 +182,7 @@ status:
       message: Managed ConfigMap hello-greeting is in the desired state
 ```
 
-This allows the state of the resource to be inspected without reading operator logs.
+This allows the current state to be inspected without reading operator logs.
 
 ---
 
@@ -209,7 +211,7 @@ spec:
   message: "Hello from Platform Lab"
 ```
 
-is supplied by the user.
+is provided by the user.
 
 The operator reports:
 
@@ -244,9 +246,11 @@ metadata:
   generation:
 ```
 
-when the desired configuration changes.
+for the desired configuration.
 
-The operator reports the generation it has processed using:
+When the `spec` changes, the generation normally increases.
+
+The operator reports which generation it has processed using:
 
 ```yaml
 status:
@@ -260,7 +264,7 @@ generation          = 2
 observedGeneration  = 2
 ```
 
-means the current status represents the latest generation processed by the operator.
+means the current status represents the latest desired state processed by the operator.
 
 If:
 
@@ -269,19 +273,15 @@ generation          = 3
 observedGeneration  = 2
 ```
 
-the desired resource has changed, but the operator status still represents an older generation.
+the desired state has changed, but the operator status still represents an older generation.
 
 ---
 
 # Conditions
 
-The operator currently exposes one condition:
+The operator currently exposes a `Ready` condition.
 
-```text
-Ready
-```
-
-A successful reconciliation produces:
+Successful reconciliation produces:
 
 ```yaml
 conditions:
@@ -303,74 +303,25 @@ conditions:
     message: ...
 ```
 
-This gives the resource a simple lifecycle:
-
-```text
-             success
-                |
-                v
-          +-------------+
-          | Ready=True  |
-          +-------------+
-                |
-              failure
-                |
-                v
-          +-------------+
-          | Ready=False |
-          +-------------+
-```
-
-If a later reconciliation succeeds, the condition moves back to:
+The resource can therefore move between:
 
 ```text
 Ready=True
 ```
 
----
-
-# lastTransitionTime
-
-Conditions include:
-
-```yaml
-lastTransitionTime:
-```
-
-This represents when the condition changed state.
-
-For example:
+and:
 
 ```text
 Ready=False
-     |
-     v
-Ready=True
 ```
 
-is a transition.
-
-But:
-
-```text
-Ready=True
-     |
-     v
-reconcile again
-     |
-     v
-Ready=True
-```
-
-is not.
-
-The existing transition time is therefore kept while the condition status remains unchanged.
+depending on reconciliation outcome.
 
 ---
 
 # Failure Handling
 
-Failures during reconciliation are handled using the Java Operator SDK error status mechanism.
+Failures during reconciliation are handled using the Java Operator SDK error-status mechanism.
 
 When reconciliation fails:
 
@@ -390,27 +341,15 @@ Exception
     +------> Retry
 ```
 
-The operator updates the resource status with:
+The full exception is written to the operator logs.
 
-```yaml
-status:
-
-  conditions:
-    - type: Ready
-      status: "False"
-      reason: ReconciliationFailed
-      message: ...
-```
-
-The complete exception is written to the operator logs.
-
-The status message is kept shorter and intended to explain the failure from the resource user's perspective.
+The resource status receives a shorter user-facing error message.
 
 ---
 
 # Retry Behavior
 
-A reconciliation exception causes Java Operator SDK to retry the reconciliation automatically.
+A failed reconciliation is retried automatically by the Java Operator SDK.
 
 Conceptually:
 
@@ -430,102 +369,23 @@ failure
 retry
 ```
 
-The retries use backoff and are limited.
+Retries are limited.
 
-This is important.
-
-The operator does not retry a failed resource forever.
-
-A failure experiment produced events similar to:
+During the RBAC failure experiment, Kubernetes Events showed:
 
 ```text
 Warning  ReconciliationFailed  ... (x6 over ...)
 ```
 
-which showed:
+which showed that the same reconciliation had failed multiple times.
 
-```text
-initial attempt
-      +
-automatic retries
-      |
-      v
-retry limit reached
-```
-
-After the retry limit is reached, the operator waits for another relevant reconciliation trigger.
+After the retry limit was reached, the operator waited for another relevant reconciliation trigger.
 
 ---
 
-## External Changes Do Not Automatically Trigger Reconciliation
+# Retry vs Reconciliation Trigger
 
-One experiment was to temporarily remove permission for the operator to create ConfigMaps.
-
-The reconciliation failed with:
-
-```text
-403 Forbidden
-```
-
-and the operator retried several times.
-
-After the retries were exhausted, the RBAC permission was restored.
-
-However, the resource was not immediately reconciled.
-
-That is because changing:
-
-```text
-ClusterRole
-```
-
-does not create an event for the `Greeting` controller.
-
-The controller watches resources relevant to its reconciliation flow, not the ClusterRole itself.
-
-The sequence was:
-
-```text
-Greeting created
-      |
-      v
-ConfigMap creation fails
-      |
-      v
-retry
-      |
-      v
-retry limit reached
-      |
-      v
-RBAC fixed
-      |
-      v
-no Greeting event
-      |
-      v
-no immediate reconciliation
-```
-
-Changing the Greeting specification created a new event:
-
-```text
-Greeting spec updated
-      |
-      v
-generation changed
-      |
-      v
-new reconciliation
-      |
-      v
-ConfigMap created
-      |
-      v
-Ready=True
-```
-
-This helped separate two concepts:
+These are two different concepts.
 
 ```text
 Retry
@@ -533,34 +393,44 @@ Retry
 another attempt after a failed reconciliation
 ```
 
-and:
+while:
 
 ```text
 Reconciliation trigger
 =
-a new event asking the controller to evaluate the resource again
+something changed that causes the controller
+to evaluate the resource again
 ```
 
-A more complete manual reconciliation strategy will be explored separately.
+For example:
+
+```text
+Greeting spec changed
+        |
+        v
+new reconciliation
+```
+
+But changing an unrelated resource such as:
+
+```text
+ClusterRole
+```
+
+does not automatically trigger the Greeting controller.
+
+This became important when testing recovery from an RBAC failure.
 
 ---
 
 # Kubernetes Events
 
-The operator also records Kubernetes Events.
+The operator records Kubernetes Events for important reconciliation outcomes.
 
-This makes important controller activity visible using normal Kubernetes tooling.
-
-Successful reconciliation produces a normal event:
+Successful reconciliation produces:
 
 ```text
 Normal  Reconciled
-```
-
-with a message similar to:
-
-```text
-Managed ConfigMap hello-greeting is in the desired state
 ```
 
 A failed reconciliation produces:
@@ -569,9 +439,7 @@ A failed reconciliation produces:
 Warning  ReconciliationFailed
 ```
 
-with the failure message.
-
-Inspect events using:
+Events can be inspected using:
 
 ```bash
 kubectl describe greeting hello
@@ -581,31 +449,452 @@ Example:
 
 ```text
 Events:
-  Type     Reason                  Message
-  ----     ------                  -------
-  Normal   Reconciled              Managed ConfigMap hello-greeting is in the desired state
+  Type    Reason      Age                 From                Message
+  ----    ------      ----                ----                -------
+  Normal  Reconciled  5s (x2 over 2m12s) greetingreconciler  Managed ConfigMap hello-greeting is in the desired state
 ```
 
-During failure:
+The:
 
 ```text
-Events:
-  Type     Reason                  Message
-  ----     ------                  -------
-  Warning  ReconciliationFailed    ...
+x2
 ```
 
-Repeated equivalent events may appear with a count instead of being printed as completely separate events.
+means Kubernetes aggregated two equivalent reconciliation Events.
 
-For example:
+---
+
+# Manual Reconciliation
+
+After testing failure recovery, one problem became clear.
+
+If automatic retries are exhausted and an external dependency is fixed later, such as RBAC, there may be no new event for the `Greeting` controller.
+
+Changing the `Greeting.spec` works, but changing business configuration only to trigger reconciliation is not ideal.
+
+The operator therefore supports an explicit manual reconciliation annotation:
 
 ```text
-ReconciliationFailed ... (x6 over 5m31s)
+platform.shubforge.dev/reconcile-at
+```
+
+Example:
+
+```bash
+kubectl annotate greeting hello \
+  platform.shubforge.dev/reconcile-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --overwrite
+```
+
+The timestamp changes every time the command is executed.
+
+The operator detects that annotation change and reconciles the existing desired state again.
+
+---
+
+## Manual Reconcile Flow
+
+The flow looks like:
+
+```text
+External problem
+      |
+      v
+retries exhausted
+      |
+      v
+problem fixed
+      |
+      v
+reconcile-at annotation changed
+      |
+      v
+Greeting update event
+      |
+      v
+reconcile()
+      |
+      v
+resource evaluated again
+```
+
+This allows reconciliation to be triggered without modifying:
+
+```yaml
+spec:
 ```
 
 ---
 
-# Logging vs Status vs Events
+# Generation vs Manual Reconciliation
+
+Manual reconciliation does not change the desired configuration.
+
+Because only metadata changes:
+
+```yaml
+metadata:
+  annotations:
+    platform.shubforge.dev/reconcile-at: ...
+```
+
+the resource generation remains unchanged.
+
+For example:
+
+```text
+generation          = 1
+observedGeneration  = 1
+```
+
+before manual reconciliation.
+
+After:
+
+```bash
+task greeting:reconcile
+```
+
+the resource can still show:
+
+```text
+generation          = 1
+observedGeneration  = 1
+```
+
+This is expected.
+
+The manual reconciliation means:
+
+```text
+Re-evaluate generation 1
+```
+
+not:
+
+```text
+There is a new desired state
+```
+
+This gives a useful distinction:
+
+```text
+generation
+=
+version of desired spec
+```
+
+while:
+
+```text
+reconcile-at
+=
+request to re-evaluate that desired spec
+```
+
+---
+
+# Greeting Update Filter
+
+The operator uses a custom update filter.
+
+The goal is to reconcile when:
+
+```text
+spec generation changes
+```
+
+or when:
+
+```text
+reconcile-at annotation changes
+```
+
+but ignore updates such as status changes that should not create another reconciliation loop.
+
+Conceptually:
+
+```text
+generation changed?
+       |
+       yes
+       |
+       v
+   reconcile
+
+
+reconcile-at changed?
+       |
+       yes
+       |
+       v
+   reconcile
+
+
+status/resourceVersion only changed?
+       |
+       no
+       |
+       v
+    ignore
+```
+
+The filter is implemented in:
+
+```text
+GreetingUpdateFilter.java
+```
+
+Conceptually, the logic is:
+
+```java
+return generationChanged(newResource, oldResource)
+        || reconcileAnnotationChanged(newResource, oldResource);
+```
+
+This prevents every metadata or status update from automatically triggering reconciliation.
+
+---
+
+# Manual Reconciliation with Taskfile
+
+A Taskfile command is available:
+
+```bash
+task greeting:reconcile
+```
+
+The command updates:
+
+```text
+platform.shubforge.dev/reconcile-at
+```
+
+with the current timestamp.
+
+By default it reconciles:
+
+```text
+hello
+```
+
+A different Greeting can be selected using:
+
+```bash
+task greeting:reconcile GREETING_NAME=failure-test
+```
+
+or:
+
+```bash
+task greeting:reconcile GREETING_NAME=manual-reconcile-test
+```
+
+---
+
+# Testing Manual Reconciliation
+
+Run:
+
+```bash
+task greeting:reconcile
+```
+
+Then inspect the annotation:
+
+```bash
+kubectl get greeting hello \
+  -o jsonpath='{.metadata.annotations.platform\.shubforge\.dev/reconcile-at}'
+```
+
+Check Events:
+
+```bash
+kubectl describe greeting hello
+```
+
+Example:
+
+```text
+Normal  Reconciled  5s (x2 over 2m12s)
+```
+
+The Event count increasing confirms that another reconciliation occurred.
+
+The generation can still remain:
+
+```text
+1
+```
+
+because the desired `spec` did not change.
+
+---
+
+# Testing Recovery Using Manual Reconciliation
+
+A useful failure experiment is to remove ConfigMap creation permission temporarily.
+
+Edit the ClusterRole:
+
+```bash
+kubectl edit clusterrole greeting-operator
+```
+
+Temporarily change:
+
+```yaml
+verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+```
+
+to:
+
+```yaml
+verbs:
+  - get
+  - list
+  - watch
+```
+
+Verify:
+
+```bash
+kubectl auth can-i \
+  create configmaps \
+  --namespace default \
+  --as=system:serviceaccount:platform-system:greeting-operator
+```
+
+Expected:
+
+```text
+no
+```
+
+Create a test Greeting:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Greeting
+
+metadata:
+  name: manual-reconcile-test
+
+spec:
+  message: "Manual reconciliation test"
+EOF
+```
+
+The operator will fail to create the ConfigMap.
+
+Eventually:
+
+```bash
+kubectl get greeting manual-reconcile-test
+```
+
+should show:
+
+```text
+READY
+False
+```
+
+and:
+
+```bash
+kubectl describe greeting manual-reconcile-test
+```
+
+should show `ReconciliationFailed` Events.
+
+---
+
+# Recovering Without Changing Spec
+
+Restore the repository RBAC configuration:
+
+```bash
+task operator:deploy
+```
+
+Verify:
+
+```bash
+kubectl auth can-i \
+  create configmaps \
+  --namespace default \
+  --as=system:serviceaccount:platform-system:greeting-operator
+```
+
+Expected:
+
+```text
+yes
+```
+
+Instead of modifying `spec`, trigger reconciliation manually:
+
+```bash
+task greeting:reconcile \
+  GREETING_NAME=manual-reconcile-test
+```
+
+The flow becomes:
+
+```text
+RBAC fixed
+      |
+      v
+manual reconcile requested
+      |
+      v
+reconcile-at changes
+      |
+      v
+GreetingUpdateFilter
+      |
+      v
+reconcile()
+      |
+      v
+ConfigMap created
+      |
+      v
+Ready=True
+```
+
+Verify:
+
+```bash
+kubectl get greeting manual-reconcile-test
+```
+
+and:
+
+```bash
+kubectl get configmap manual-reconcile-test-greeting
+```
+
+Then inspect Events:
+
+```bash
+kubectl describe greeting manual-reconcile-test
+```
+
+You should see the failed history followed by a successful reconciliation.
+
+---
+
+# Logs vs Status vs Events
 
 The operator now exposes information through three different mechanisms.
 
@@ -618,13 +907,13 @@ developer/operator debugging
 ```text
 Status
 =
-current state of the custom resource
+current resource state
 ```
 
 ```text
 Events
 =
-important things that happened to the resource
+important resource history
 ```
 
 For example:
@@ -650,12 +939,11 @@ and:
 
 ```text
 Warning ReconciliationFailed
+Normal Reconciled
         |
         v
-Kubernetes Event
+Kubernetes Events
 ```
-
-Each serves a different purpose.
 
 ---
 
@@ -687,7 +975,7 @@ ClusterRole
 Kubernetes API
 ```
 
-The ClusterRole allows the operator to:
+The current permissions allow the operator to:
 
 ```text
 get/list/watch Greetings
@@ -697,78 +985,6 @@ get/list/watch ConfigMaps
 create/update/patch/delete ConfigMaps
 
 create/patch Kubernetes Events
-```
-
----
-
-## Greeting Status Permissions
-
-Because status is a Kubernetes subresource, it has separate RBAC permissions:
-
-```yaml
-- apiGroups:
-    - platform.shubforge.dev
-
-  resources:
-    - greetings/status
-
-  verbs:
-    - get
-    - patch
-    - update
-```
-
----
-
-## Event Permissions
-
-To record Kubernetes Events, the operator also needs:
-
-```yaml
-- apiGroups:
-    - ""
-
-  resources:
-    - events
-
-  verbs:
-    - get
-    - create
-    - patch
-```
-
----
-
-# Verify RBAC
-
-Check Greeting access:
-
-```bash
-kubectl auth can-i \
-  list greetings.platform.shubforge.dev \
-  --all-namespaces \
-  --as=system:serviceaccount:platform-system:greeting-operator
-```
-
-Expected:
-
-```text
-yes
-```
-
-Check ConfigMap creation:
-
-```bash
-kubectl auth can-i \
-  create configmaps \
-  --namespace default \
-  --as=system:serviceaccount:platform-system:greeting-operator
-```
-
-Expected:
-
-```text
-yes
 ```
 
 ---
@@ -819,348 +1035,143 @@ task operator:logs
 
 ---
 
-# Create a Greeting
+# Greeting Commands
 
-Create the sample resource:
+Create:
 
 ```bash
 task greeting:create
 ```
 
-Check:
+List:
 
 ```bash
 task greeting:get
-```
-
-Inspect complete status:
-
-```bash
-task greeting:status
-```
-
-or:
-
-```bash
-kubectl get greeting hello -o yaml
-```
-
-Check Events:
-
-```bash
-task greeting:events
-```
-
-or:
-
-```bash
-kubectl describe greeting hello
-```
-
----
-
-# Successful Flow
-
-A successful reconciliation looks like:
-
-```text
-Greeting
-    |
-    v
-Operator
-    |
-    v
-ConfigMap
-    |
-    +------> Ready=True
-    |
-    +------> Reconciled Event
-```
-
-Example status:
-
-```yaml
-status:
-
-  configMapName: hello-greeting
-
-  observedGeneration: 1
-
-  conditions:
-    - type: Ready
-      status: "True"
-      reason: ConfigMapReady
-      message: Managed ConfigMap hello-greeting is in the desired state
-```
-
----
-
-# Failure Flow
-
-A failed reconciliation looks like:
-
-```text
-Greeting
-    |
-    v
-Operator
-    |
-    v
-Failure
-    |
-    +------> Ready=False
-    |
-    +------> Warning Event
-    |
-    +------> retry
-```
-
-If retries continue failing:
-
-```text
-failure
-    |
-    v
-retry
-    |
-    v
-failure
-    |
-    v
-retry
-    |
-    v
-retry limit reached
-```
-
-The resource remains in its failed state until another relevant reconciliation is triggered.
-
----
-
-# Testing Failure Handling
-
-One way to test failure handling is to temporarily remove ConfigMap creation permission from the operator ClusterRole.
-
-Temporarily remove:
-
-```text
-create
-update
-patch
-delete
-```
-
-from the ConfigMap verbs.
-
-Then create a new Greeting:
-
-```yaml
-apiVersion: platform.shubforge.dev/v1alpha1
-kind: Greeting
-
-metadata:
-  name: failure-test
-
-spec:
-  message: "Failure test"
 ```
 
 Check status:
 
 ```bash
-kubectl get greeting failure-test -o yaml
-```
-
-The resource should eventually report:
-
-```yaml
-conditions:
-
-  - type: Ready
-    status: "False"
-    reason: ReconciliationFailed
+task greeting:status
 ```
 
 Check Events:
 
 ```bash
-kubectl describe greeting failure-test
-```
-
-The output should include:
-
-```text
-Warning  ReconciliationFailed
-```
-
----
-
-# Testing Recovery
-
-Restore the correct RBAC configuration:
-
-```bash
-task operator:deploy
-```
-
-Verify:
-
-```bash
-kubectl auth can-i \
-  create configmaps \
-  --namespace default \
-  --as=system:serviceaccount:platform-system:greeting-operator
-```
-
-Expected:
-
-```text
-yes
-```
-
-If automatic retries have already been exhausted, restoring RBAC alone does not immediately cause another Greeting reconciliation.
-
-For the current experiment, changing the Greeting specification creates a new reconciliation event.
-
-For example:
-
-```bash
-kubectl patch greeting failure-test \
-  --type=merge \
-  -p '{"spec":{"message":"Recovery test"}}'
-```
-
-The new sequence becomes:
-
-```text
-RBAC restored
-      |
-      v
-Greeting spec changed
-      |
-      v
-new reconciliation
-      |
-      v
-ConfigMap created
-      |
-      v
-Ready=True
-      |
-      v
-Reconciled Event
-```
-
-Check:
-
-```bash
-kubectl get greetings
-```
-
-and:
-
-```bash
-kubectl describe greeting failure-test
-```
-
----
-
-# kubectl Output
-
-The CRD exposes useful printer columns.
-
-```bash
-kubectl get greetings
-```
-
-shows:
-
-```text
-NAME           READY   CONFIGMAP                  AGE
-hello          True    hello-greeting             5m
-failure-test   False   <none>                     1m
-```
-
-After recovery:
-
-```text
-NAME           READY   CONFIGMAP                  AGE
-hello          True    hello-greeting             6m
-failure-test   True    failure-test-greeting      2m
-```
-
----
-
-# Taskfile
-
-The root Taskfile acts as the developer interface for the repository.
-
-List commands:
-
-```bash
-task --list
-```
-
-Useful Greeting commands include:
-
-```bash
-task greeting:create
-task greeting:get
-task greeting:status
 task greeting:events
+```
+
+Manually reconcile:
+
+```bash
+task greeting:reconcile
+```
+
+Manually reconcile another Greeting:
+
+```bash
+task greeting:reconcile GREETING_NAME=<name>
+```
+
+Delete:
+
+```bash
 task greeting:delete
 ```
 
-Useful operator commands include:
+---
 
-```bash
-task operator:build
-task operator:image:build
-task operator:image:load
-task operator:deploy
-task operator:restart
-task operator:status
-task operator:logs
+# Current Reconciliation Triggers
+
+The controller currently reacts to several kinds of situations.
+
+## Desired state change
+
+```text
+Greeting.spec changes
+       |
+       v
+generation changes
+       |
+       v
+reconcile
+```
+
+## Managed resource event
+
+```text
+ConfigMap changes/disappears
+       |
+       v
+dependent resource event
+       |
+       v
+reconcile
+```
+
+## Failure retry
+
+```text
+reconciliation fails
+       |
+       v
+automatic retry
+```
+
+## Manual reconciliation
+
+```text
+reconcile-at annotation changes
+       |
+       v
+GreetingUpdateFilter
+       |
+       v
+reconcile
+```
+
+These are different mechanisms, even though they all eventually lead to:
+
+```text
+reconcile()
 ```
 
 ---
 
 # Current Architecture
 
-The current controller flow is:
+The controller flow now looks like:
 
 ```text
-                     Greeting
-                         |
-                         v
-                  Greeting Operator
-                         |
-                  +------+------+
-                  |             |
-               success        failure
-                  |             |
-                  v             v
-              ConfigMap     Ready=False
-                  |             |
-                  v             v
-              Ready=True    Warning Event
-                  |             |
-                  v             v
-            Normal Event       retry
+                         Greeting
+                            |
+              +-------------+-------------+
+              |                           |
+          spec change              reconcile-at change
+              |                           |
+              v                           v
+      generation change             update filter
+              |                           |
+              +-------------+-------------+
+                            |
+                            v
+                       reconcile()
+                            |
+                     +------+------+
+                     |             |
+                  success        failure
+                     |             |
+                     v             v
+                 ConfigMap     Ready=False
+                     |             |
+                     v             v
+                 Ready=True    Warning Event
+                     |             |
+                     v             v
+               Normal Event       Retry
 ```
 
-The operator now does more than create Kubernetes resources.
-
-It also reports:
-
-```text
-current state
-failures
-retries
-important events
-```
-
-through Kubernetes-native mechanisms.
+The operator now supports both automatic and explicit reconciliation triggers.
 
 ---
 
@@ -1180,6 +1191,7 @@ operators/greeting-operator/
                 ├── GreetingSpec.java
                 ├── GreetingStatus.java
                 ├── GreetingReconciler.java
+                ├── GreetingUpdateFilter.java
                 ├── GreetingConfigMapDependentResource.java
                 └── GreetingOperatorApplication.java
 ```
@@ -1205,19 +1217,34 @@ k8s/
 
 # What's Next?
 
-The next steps will be kept separate so each operator concept can be explored properly.
+Manual reconciliation solves one specific problem:
 
-Areas to explore include:
+```text
+external issue fixed
++
+automatic retries exhausted
++
+no relevant resource event
+```
+
+The next topics can now focus on reconciliation behavior in more depth:
 
 ```text
 reconciliation best practices
-manual reconciliation
 periodic reconciliation
+rescheduling
+idempotency
+external dependency handling
+```
+
+After that, the operator lifecycle can be expanded with:
+
+```text
 owner references
-deletion behavior
+resource deletion
 finalizers
 integration tests
 GitHub Actions
 ```
 
-For now, the Greeting Operator can handle both the successful and failed reconciliation paths and expose that information directly through Kubernetes.
+The Greeting Operator now supports both normal desired-state reconciliation and an explicit way to request another reconciliation when needed.

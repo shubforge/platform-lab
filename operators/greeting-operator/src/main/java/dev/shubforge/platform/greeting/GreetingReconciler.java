@@ -3,6 +3,7 @@ package dev.shubforge.platform.greeting;
 import io.fabric8.kubernetes.api.model.Condition;
 import io.fabric8.kubernetes.api.model.ConditionBuilder;
 import io.fabric8.kubernetes.api.model.ConfigMap;
+import io.javaoperatorsdk.operator.api.config.informer.Informer;
 import io.javaoperatorsdk.operator.api.reconciler.*;
 import io.javaoperatorsdk.operator.api.reconciler.dependent.Dependent;
 import org.slf4j.Logger;
@@ -11,7 +12,6 @@ import org.slf4j.LoggerFactory;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Optional;
 
 @Workflow(
     dependents = {
@@ -20,7 +20,12 @@ import java.util.Optional;
         )
     }
 )
-@ControllerConfiguration
+@ControllerConfiguration(
+    defaultFilters = false,
+    informer = @Informer(
+        onUpdateFilter = GreetingUpdateFilter.class
+    )
+)
 public class GreetingReconciler
     implements Reconciler<Greeting> {
 

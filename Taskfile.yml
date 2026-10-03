@@ -267,3 +267,8 @@ tasks:
         -n platform-system
         deployment/platform-operator
         -f
+
+  platform-operator:test:
+    desc: Run Platform Operator unit tests
+    cmds:
+      - ./mvnw -f operators/platform-operator/pom.xml test

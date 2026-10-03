@@ -1,0 +1,13 @@
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Application
+
+metadata:
+  name: greeting-service
+
+spec:
+  image: greeting-service:1.0.0
+
+  replicas: 1
+
+  port:
+    containerPort: 8080

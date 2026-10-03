@@ -1,25 +1,248 @@
 # Platform Lab
 
-Platform Lab is a hands-on project for learning Kubernetes, operators, platform engineering, and developer platform concepts by building them step by step.
+Platform Lab is a learning project for exploring how a developer platform can be built on top of Kubernetes.
 
-The project starts with a small custom Kubernetes API and gradually evolves toward higher-level platform abstractions.
+The goal is to create simple developer-facing APIs while the platform handles lower-level Kubernetes infrastructure.
 
-## Current Architecture
+Instead of requiring developers to manage resources such as:
 
 ```text
-Custom Resource
+Deployments
+Services
+ConfigMaps
+Secrets
+ServiceAccounts
+network policies
+authorization policies
+gateway configuration
+```
+
+the platform should provide higher-level APIs.
+
+For example:
+
+```yaml
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Application
+
+metadata:
+  name: greeting-service
+
+spec:
+  image: greeting-service:1.0.0
+
+  replicas: 1
+
+  port:
+    containerPort: 8080
+```
+
+The platform operator will eventually translate that into the required Kubernetes resources.
+
+---
+
+## Project Status
+
+The project started with a small `Greeting` operator used to learn Kubernetes controller fundamentals.
+
+That work currently covers:
+
+- Custom Resource Definitions
+- Java Operator SDK
+- reconciliation
+- managed dependent resources
+- status and conditions
+- RBAC
+- failure handling
+- retries
+- Kubernetes Events
+- manual reconciliation
+- event filtering
+- owner references
+- Kubernetes garbage collection
+
+The project has now moved into building the actual platform APIs.
+
+Current platform work:
+
+```text
+Application API        ✓
+Application validation ✓
+Application API tests  ✓
+
+Application controller       next
+Deployment management        next
+Service management           next
+Application status           next
+```
+
+---
+
+# Architecture
+
+The long-term direction is:
+
+```text
+                   Developer
+                       |
+                       v
+                Platform APIs
+                       |
+                       v
+                Platform Operator
+                       |
+       +---------------+---------------+
+       |               |               |
+       v               v               v
+   Workloads        Networking      Security
+       |               |               |
+       v               v               v
+  Deployment         Service       Authorization
+  ConfigMap          Routes        Identity
+  Secrets            Gateway       Access
+```
+
+The platform APIs should hide unnecessary Kubernetes implementation details from application developers.
+
+---
+
+# Application API
+
+The first real platform API is:
+
+```text
+Application
+```
+
+Example:
+
+```yaml
+apiVersion: platform.shubforge.dev/v1alpha1
+kind: Application
+
+metadata:
+  name: greeting-service
+
+spec:
+  image: greeting-service:1.0.0
+
+  replicas: 1
+
+  port:
+    containerPort: 8080
+```
+
+The initial API intentionally stays small.
+
+It currently supports:
+
+```text
+image
+replicas
+containerPort
+```
+
+Future capabilities will be added only when the platform implements them.
+
+---
+
+## Application API Flow
+
+Currently:
+
+```text
+Application YAML
       |
       v
 Kubernetes API
       |
       v
-Java Operator
-      |
-      v
-Managed Kubernetes Resources
+Application Custom Resource
 ```
 
-The first implementation is a simple `Greeting` operator.
+The next stage will become:
+
+```text
+Application
+      |
+      v
+Platform Operator
+      |
+      +------ Deployment
+      |
+      +------ Service
+```
+
+---
+
+# Application Validation
+
+The CRD performs basic API validation.
+
+Examples include:
+
+```text
+image must be provided
+
+replicas must be >= 1
+
+containerPort must be between
+1 and 65535
+```
+
+Invalid configuration is rejected by Kubernetes before it reaches the controller.
+
+---
+
+# API Testing
+
+Platform API tests are located under:
+
+```text
+scripts/tests/
+```
+
+The Application API test is:
+
+```text
+scripts/tests/application-api-test.sh
+```
+
+It uses:
+
+```bash
+kubectl apply --dry-run=server
+```
+
+to test the CRD against the real Kubernetes API server without persisting test resources.
+
+The current tests verify:
+
+```text
+valid Application          → accepted
+
+missing image              → rejected
+
+invalid container port     → rejected
+
+replicas below minimum     → rejected
+```
+
+Run:
+
+```bash
+task application:test:api
+```
+
+Testing will grow alongside each platform capability.
+
+When the Java platform operator is introduced, controller integration tests will be added as part of the same feature development.
+
+---
+
+# Greeting Operator
+
+The Greeting Operator remains in the project as a small reference implementation for Kubernetes operator concepts.
 
 ```text
 Greeting
@@ -31,157 +254,212 @@ Greeting Operator
 ConfigMap
 ```
 
-## Current Progress
+Its detailed documentation is available at:
 
-- [x] Local Kind cluster
-- [x] Taskfile based developer workflow
-- [x] Greeting CRD
-- [x] Java Greeting controller
-- [x] ConfigMap reconciliation
-- [x] Operator Docker image
-- [x] Operator deployment inside Kubernetes
-- [x] ServiceAccount and RBAC
-- [x] Cluster-wide Greeting reconciliation
-- [x] Greeting status and conditions
-- [ ] Failure status and retries
-- [ ] Kubernetes Events
-- [ ] Finalizers
-- [ ] Integration tests
-- [ ] GitHub Actions
-- [ ] Application API
-- [ ] ApplicationRelease
-- [ ] ApiDependency
-- [ ] AccessGrant
-
-## Prerequisites
-
-- Docker
-- SDKMAN
-- Java
-- kubectl
-- Kind
-- Task
-
-Check the local environment:
-
-```bash
-task tools:check
+```text
+operators/greeting-operator/README.md
 ```
 
-## Getting Started
+The Greeting operator is primarily a learning/reference component rather than the long-term platform API.
 
-Load the project Java version:
+---
 
-```bash
-sdk env
-```
-
-Create the local Kubernetes cluster:
-
-```bash
-task cluster:create
-```
-
-Install the CRDs:
-
-```bash
-task crd:install
-```
-
-Build the Greeting operator image:
-
-```bash
-task operator:image:build
-```
-
-Load the image into Kind:
-
-```bash
-task operator:image:load
-```
-
-Deploy the operator:
-
-```bash
-task operator:deploy
-```
-
-Create the sample Greeting:
-
-```bash
-task greeting:create
-```
-
-Check it:
-
-```bash
-kubectl get greetings
-```
-
-## Components
-
-### Greeting Operator
-
-The first operator in Platform Lab.
-
-It introduces:
-
-- Custom Resource Definitions
-- Java Operator SDK
-- reconciliation
-- dependent resources
-- ConfigMap management
-- Docker packaging
-- ServiceAccounts
-- Kubernetes RBAC
-- operator deployment
-- status and conditions
-
-See:
-
-[`operators/greeting-operator/README.md`](operators/greeting-operator/README.md)
-
-## Project Structure
+# Repository Structure
 
 ```text
 platform-lab/
+│
 ├── cluster/
 │   └── kind/
+│       └── cluster.yaml
 │
 ├── docs/
 │
 ├── k8s/
 │   ├── crds/
+│   │   ├── greetings.yaml
+│   │   └── applications.yaml
+│   │
 │   ├── operator/
+│   │
 │   └── samples/
+│       ├── greeting.yaml
+│       └── application.yaml
 │
 ├── operators/
 │   └── greeting-operator/
+│       ├── Dockerfile
+│       ├── pom.xml
+│       ├── README.md
+│       └── src/
 │
-├── Taskfile.yml
+├── scripts/
+│   └── tests/
+│       └── application-api-test.sh
+│
 ├── .sdkmanrc
-└── README.md
+├── README.md
+└── Taskfile.yml
 ```
 
-## Development Commands
+This structure will evolve as the real platform operator is introduced.
 
-List all available commands:
+---
 
-```bash
-task --list
-```
+# Prerequisites
 
-The Taskfile is the main developer interface for the repository.
-
-## What's Next?
-
-The project will gradually move from the simple Greeting example toward higher-level platform APIs such as:
+The local development environment currently uses:
 
 ```text
-Application
-ApplicationRelease
-ApiDependency
-AccessGrant
+Java
+Maven
+Docker
+kubectl
+Kind
+Task
 ```
 
-The goal is to understand the Kubernetes building blocks first and then use them to build platform abstractions.
+Java configuration is managed through:
+
+```text
+.sdkmanrc
+```
+
+---
+
+# Local Kubernetes Cluster
+
+Create the Kind cluster:
+
+```bash
+task cluster:create
+```
+
+Check it:
+
+```bash
+task cluster:status
+```
+
+Delete it:
+
+```bash
+task cluster:delete
+```
+
+---
+
+# Application Commands
+
+Install the Application CRD:
+
+```bash
+task application:crd:install
+```
+
+Create the sample Application:
+
+```bash
+task application:create
+```
+
+List Applications:
+
+```bash
+task application:get
+```
+
+Describe:
+
+```bash
+task application:describe
+```
+
+Delete:
+
+```bash
+task application:delete
+```
+
+Run Application API tests:
+
+```bash
+task application:test:api
+```
+
+---
+
+# Development Approach
+
+Platform Lab is built incrementally.
+
+Each feature should ideally include:
+
+```text
+API
++
+implementation
++
+tests
++
+documentation
+```
+
+The goal is not to introduce every Kubernetes or platform concept immediately.
+
+Capabilities are added when an actual platform requirement needs them.
+
+---
+
+# Roadmap
+
+The current direction is:
+
+```text
+Greeting Operator
+      ✓
+      |
+      v
+Application API
+      ✓
+      |
+      v
+Application Controller
+      |
+      +---- Deployment
+      |
+      +---- Service
+      |
+      v
+Application Status
+      |
+      v
+Configuration
+      |
+      v
+Secrets
+      |
+      v
+ApplicationRelease
+      |
+      v
+ApiDependency
+      |
+      v
+AccessGrant
+      |
+      v
+Networking / Authorization
+```
+
+Additional concepts such as finalizers, external API reconciliation, periodic reconciliation, and advanced lifecycle handling will be introduced when a real platform use case requires them.
+
+---
+
+# Learning in Public
+
+This repository is also the code behind my **Platform Lab: Building on Kubernetes** blog series.
+
+The goal is to build the platform incrementally while documenting what I learn along the way.
+
+The project started with Kubernetes operator fundamentals and is now moving into real platform API design and implementation.

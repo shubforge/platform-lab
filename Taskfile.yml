@@ -155,3 +155,39 @@ tasks:
       - kubectl rollout status
         deployment/greeting-operator
         -n platform-system
+
+
+  application:crd:install:
+    desc: Install the Application CRD
+    cmds:
+      - kubectl apply -f k8s/crds/applications.yaml
+
+  application:crd:delete:
+    desc: Delete the Application CRD
+    cmds:
+      - kubectl delete -f k8s/crds/applications.yaml --ignore-not-found
+
+  application:create:
+    desc: Create the sample Application
+    cmds:
+      - kubectl apply -f k8s/samples/application.yaml
+
+  application:get:
+    desc: List Applications
+    cmds:
+      - kubectl get applications.platform.shubforge.dev
+
+  application:describe:
+    desc: Describe the sample Application
+    cmds:
+      - kubectl describe application greeting-service
+
+  application:delete:
+    desc: Delete the sample Application
+    cmds:
+      - kubectl delete application greeting-service --ignore-not-found
+
+  application:test:api:
+    desc: Test the Application API and CRD validation
+    cmds:
+      - bash ./scripts/tests/application-api-test.sh

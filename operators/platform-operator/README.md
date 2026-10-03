@@ -2,7 +2,7 @@
 
 The Platform Operator is the main Kubernetes operator for Platform Lab.
 
-It is responsible for translating higher-level developer-facing platform resources into lower-level Kubernetes resources.
+It translates higher-level developer-facing platform resources into lower-level Kubernetes resources.
 
 The first platform API is:
 
@@ -31,7 +31,7 @@ Platform Operator
      +------ Service
 ```
 
-This is the first real platform behavior in the project.
+It also keeps those generated resources synchronized when the Application changes.
 
 ---
 
@@ -82,11 +82,13 @@ The current Platform Operator supports:
 ```text
 Application CRD
 Application reconciliation
-Deployment creation
-Service creation
+Deployment management
+Service management
+Application updates
 basic Application status
 Kubernetes deployment
 RBAC
+API validation testing
 controller integration testing
 ```
 
@@ -94,11 +96,11 @@ The operator intentionally does not yet support:
 
 ```text
 workload readiness
-conditions
+Ready conditions
 ConfigMaps
 Secrets
 health checks
-resource limits
+resource requests
 routes
 Istio
 authorization
@@ -325,7 +327,7 @@ ApplicationSpec
 
 # Deployment Dependent Resource
 
-Deployment creation is handled by:
+Deployment management is handled by:
 
 ```text
 ApplicationDeploymentDependentResource.java
@@ -386,7 +388,7 @@ to managed resources.
 
 # Service Dependent Resource
 
-Service creation is handled by:
+Service management is handled by:
 
 ```text
 ApplicationServiceDependentResource.java
@@ -517,15 +519,217 @@ Instead, reconciliation continuously moves the actual resources toward their des
 
 ---
 
+# Application Updates
+
+The Application API is not treated as a one-time provisioning request.
+
+It represents desired state.
+
+For example, an Application may initially be:
+
+```yaml
+spec:
+  image: greeting-service:1.0.0
+  replicas: 1
+
+  port:
+    containerPort: 8080
+```
+
+The operator creates:
+
+```text
+Deployment
+image = 1.0.0
+replicas = 1
+port = 8080
+
+Service
+port = 8080
+targetPort = 8080
+```
+
+Now the Application can be changed to:
+
+```yaml
+spec:
+  image: greeting-service:2.0.0
+  replicas: 3
+
+  port:
+    containerPort: 9090
+```
+
+The Platform Operator reconciles the existing resources toward the new desired state.
+
+The result becomes:
+
+```text
+Deployment
+image = 2.0.0
+replicas = 3
+port = 9090
+
+Service
+port = 9090
+targetPort = 9090
+```
+
+---
+
+# Update Flow
+
+The update lifecycle is:
+
+```text
+Application generation 1
+        |
+        v
+Deployment + Service
+        |
+        | Application spec changes
+        v
+Application generation 2
+        |
+        v
+reconcile
+        |
+        +------ Deployment updated
+        |
+        +------ Service updated
+```
+
+The controller does not need special logic like:
+
+```text
+if image changed
+    update Deployment
+
+if replicas changed
+    update Deployment
+
+if port changed
+    update Deployment and Service
+```
+
+The dependent resources simply recalculate the desired state from the latest Application specification.
+
+---
+
+# Desired-State Reconciliation
+
+The important model is:
+
+```text
+current Application spec
+        |
+        v
+desired Deployment
+desired Service
+        |
+        v
+compare with actual state
+        |
+        v
+reconcile differences
+```
+
+So both creation and update use the same desired-state logic.
+
+For creation:
+
+```text
+desired exists
+actual missing
+      |
+      v
+create
+```
+
+For update:
+
+```text
+desired changed
+actual exists but differs
+      |
+      v
+update
+```
+
+This is one of the main reasons for using managed dependent resources.
+
+---
+
+# Updating an Application
+
+A sample update can be triggered with:
+
+```bash
+task application:update
+```
+
+The current development task updates the sample Application to:
+
+```yaml
+spec:
+  image: greeting-service:2.0.0
+  replicas: 3
+
+  port:
+    containerPort: 9090
+```
+
+The same update can also be applied directly:
+
+```bash
+kubectl patch application greeting-service \
+  --type=merge \
+  -p '{
+    "spec": {
+      "image": "greeting-service:2.0.0",
+      "replicas": 3,
+      "port": {
+        "containerPort": 9090
+      }
+    }
+  }'
+```
+
+---
+
+# Generation
+
+When the Application `spec` changes, Kubernetes increments:
+
+```text
+metadata.generation
+```
+
+For example:
+
+```text
+generation = 1
+```
+
+before the update may become:
+
+```text
+generation = 2
+```
+
+after the update.
+
+This indicates that the desired configuration changed.
+
+---
+
 # Application Status
 
-The controller currently writes a small amount of status information.
-
-Example:
+The controller currently writes:
 
 ```yaml
 status:
-  observedGeneration: 1
+  observedGeneration: 2
   deploymentName: greeting-service
   serviceName: greeting-service
 ```
@@ -540,25 +744,100 @@ serviceName
 
 ---
 
-## observedGeneration
+# observedGeneration
 
 The controller records:
 
-```yaml
-status:
-  observedGeneration:
+```text
+status.observedGeneration
 ```
 
-to show which Application generation it has processed.
+to indicate which Application generation it has processed.
 
 For example:
 
 ```text
-metadata.generation      = 1
-status.observedGeneration = 1
+metadata.generation       = 2
+status.observedGeneration = 2
 ```
 
-means the current controller status corresponds to the current desired Application specification.
+means the controller status represents the latest desired state.
+
+This gives us an important reconciliation invariant:
+
+```text
+generation
+=
+desired state version
+```
+
+and:
+
+```text
+observedGeneration
+=
+version processed by the controller
+```
+
+---
+
+# Updating Existing Resources
+
+Application updates are expected to modify the existing Deployment and Service rather than replacing them.
+
+The integration test verifies this using Kubernetes resource UIDs.
+
+Before the update:
+
+```text
+Deployment UID = A
+Service UID    = B
+```
+
+After the update:
+
+```text
+Deployment UID = A
+Service UID    = B
+```
+
+The specification changed, but the Kubernetes resources remained the same objects.
+
+Conceptually:
+
+```text
+Application update
+       |
+       v
+Deployment patch/update
+Service patch/update
+```
+
+rather than:
+
+```text
+delete Deployment
+create Deployment
+
+delete Service
+create Service
+```
+
+---
+
+# Service Identity
+
+The controller test also records:
+
+```text
+Service.spec.clusterIP
+```
+
+before and after an Application update.
+
+The value should remain unchanged during a normal reconciliation.
+
+This is another useful check that the Service is being updated in place rather than recreated unnecessarily.
 
 ---
 
@@ -575,13 +854,13 @@ but the controller does not populate them yet.
 
 This is intentional.
 
-Creating a Deployment successfully does not automatically mean:
+Creating or updating a Deployment does not automatically mean:
 
 ```text
 Application Ready=True
 ```
 
-For example, the Deployment could exist but the workload could be failing because of:
+For example, a Deployment could exist while Pods are failing because of:
 
 ```text
 ImagePullBackOff
@@ -590,19 +869,24 @@ failed readiness probe
 scheduling failure
 ```
 
-So readiness will be implemented separately once the operator starts observing Deployment status.
-
-For the current version:
+Application updates also introduce Deployment rollout behavior:
 
 ```text
-resource provisioned
+old ReplicaSet
+      |
+      v
+new ReplicaSet
+      |
+      v
+new Pods starting
+      |
+      v
+old Pods terminating
 ```
 
-does not yet mean:
+The platform should observe that lifecycle before deciding whether an Application is actually ready.
 
-```text
-application ready
-```
+Readiness will therefore be implemented separately.
 
 ---
 
@@ -648,25 +932,13 @@ Platform Operator
       +---- AccessGrantReconciler
 ```
 
-This is why the module is called:
-
-```text
-platform-operator
-```
-
-rather than:
-
-```text
-application-operator
-```
-
 ---
 
 # Running Inside Kubernetes
 
 The Platform Operator itself runs as a Kubernetes Deployment.
 
-The Kubernetes manifests are located under:
+The manifests are located under:
 
 ```text
 k8s/platform-operator/
@@ -769,14 +1041,6 @@ From the repository root:
 task platform-operator:build
 ```
 
-This builds:
-
-```text
-operators/platform-operator
-```
-
-using the repository Maven wrapper.
-
 ---
 
 # Build the Docker Image
@@ -827,9 +1091,9 @@ task platform-operator:restart
 
 ---
 
-# Creating an Application
+# Application Commands
 
-Install the CRD first:
+Install the Application CRD:
 
 ```bash
 task application:crd:install
@@ -841,42 +1105,47 @@ Create the sample Application:
 task application:create
 ```
 
-Check:
+List Applications:
 
 ```bash
 task application:get
 ```
 
-The sample resource is:
+Describe the sample Application:
 
-```text
-k8s/samples/application.yaml
+```bash
+task application:describe
+```
+
+Update the sample Application:
+
+```bash
+task application:update
+```
+
+Delete:
+
+```bash
+task application:delete
 ```
 
 ---
 
 # Verify Generated Resources
 
-Once the Platform Operator is running, creating:
+After creating the sample Application:
 
-```text
-Application/greeting-service
+```bash
+task application:create
 ```
 
-should create:
-
-```text
-Deployment/greeting-service
-Service/greeting-service
-```
-
-Check the Deployment:
+check:
 
 ```bash
 kubectl get deployment greeting-service
 ```
 
-Check the Service:
+and:
 
 ```bash
 kubectl get service greeting-service
@@ -894,7 +1163,7 @@ Inspect the Service:
 kubectl get service greeting-service -o yaml
 ```
 
-Check Application status:
+Inspect Application status:
 
 ```bash
 kubectl get application greeting-service -o yaml
@@ -902,42 +1171,74 @@ kubectl get application greeting-service -o yaml
 
 ---
 
-# Current Provisioning Flow
+# Verifying an Update
 
-The current provisioning flow is:
+Before updating, check the current Deployment:
 
-```text
-Developer
-    |
-    v
-Application YAML
-    |
-    v
-Kubernetes API
-    |
-    v
-Application Custom Resource
-    |
-    v
-ApplicationReconciler
-    |
-    +---------------+
-    |               |
-    v               v
-Deployment        Service
+```bash
+kubectl get deployment greeting-service \
+  -o jsonpath='{.spec.replicas}'
 ```
 
-The developer only defines the `Application`.
+Check the image:
 
-The platform owns the Kubernetes implementation.
+```bash
+kubectl get deployment greeting-service \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Then:
+
+```bash
+task application:update
+```
+
+Check again:
+
+```bash
+kubectl get deployment greeting-service \
+  -o jsonpath='{.spec.replicas}'
+```
+
+Expected:
+
+```text
+3
+```
+
+Check image:
+
+```bash
+kubectl get deployment greeting-service \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Expected:
+
+```text
+greeting-service:2.0.0
+```
+
+Check Service port:
+
+```bash
+kubectl get service greeting-service \
+  -o jsonpath='{.spec.ports[0].port}'
+```
+
+Expected:
+
+```text
+9090
+```
 
 ---
 
 # Testing
 
-Testing is being introduced alongside platform features rather than added later.
+Testing is introduced alongside platform features rather than added later.
 
-There are currently two levels of Application tests.
+There are currently two Application test layers.
 
 ---
 
@@ -955,9 +1256,9 @@ Run:
 task application:test:api
 ```
 
-This test verifies the Application CRD contract using the real Kubernetes API server.
+The test verifies the Application CRD contract using the real Kubernetes API server.
 
-It tests:
+It checks:
 
 ```text
 valid Application          → accepted
@@ -979,7 +1280,7 @@ so API validation happens inside Kubernetes without persisting the test resource
 
 ---
 
-## Application Controller Test
+# Application Controller Test
 
 Located at:
 
@@ -993,73 +1294,163 @@ Run:
 task application:test:controller
 ```
 
-This is a black-box integration test.
-
-It creates:
+This is a black-box integration test using:
 
 ```text
-temporary namespace
-      |
-      v
-Application
-      |
-      v
-running Platform Operator
-      |
-      v
-Deployment + Service
+real Kind cluster
+real Kubernetes API
+real Platform Operator
+real Application resource
+real Deployment
+real Service
 ```
-
-The test verifies:
-
-```text
-Application is created
-
-Deployment appears
-
-Deployment replicas match the Application
-
-Deployment image matches the Application
-
-Deployment container port matches the Application
-
-Service appears
-
-Service port matches the Application
-
-Application status contains the generated resource names
-```
-
-The temporary test namespace is removed when the test completes.
 
 ---
 
-# Why the Controller Test Uses a Real Operator
+# Controller Test: Creation
 
-The current controller test intentionally exercises the full local platform flow.
+The first part of the controller test verifies:
 
 ```text
-test script
-     |
-     v
-real Kubernetes API
-     |
-     v
-real Application CR
-     |
-     v
-real Platform Operator Pod
-     |
-     v
-real reconciler
-     |
-     v
-real Deployment + Service
+Application created
+        |
+        v
+Deployment created
+        |
+        v
+Deployment matches spec
 ```
 
-This provides an easy-to-understand first integration test.
+and:
 
-Java-level tests can be introduced later where they provide faster or more focused feedback.
+```text
+Application created
+        |
+        v
+Service created
+        |
+        v
+Service matches spec
+```
+
+It checks:
+
+```text
+Deployment replicas
+
+Deployment image
+
+Deployment container port
+
+Service port
+
+Service targetPort
+
+Application deploymentName
+
+Application serviceName
+```
+
+---
+
+# Controller Test: Updates
+
+The controller test now also updates the Application.
+
+Initial state:
+
+```yaml
+spec:
+  image: example/test:1.0.0
+  replicas: 2
+
+  port:
+    containerPort: 8080
+```
+
+Updated state:
+
+```yaml
+spec:
+  image: example/test:2.0.0
+  replicas: 3
+
+  port:
+    containerPort: 9090
+```
+
+The test waits until the generated resources converge to the new desired state.
+
+It verifies:
+
+```text
+Deployment replicas = 3
+
+Deployment image = example/test:2.0.0
+
+Deployment port = 9090
+
+Service port = 9090
+
+Service targetPort = 9090
+```
+
+---
+
+# Controller Test: Resource Identity
+
+Before the Application is updated, the test captures:
+
+```text
+Deployment UID
+Service UID
+Service clusterIP
+```
+
+After reconciliation, it verifies that those values remain unchanged.
+
+The test therefore proves:
+
+```text
+Application update
+        |
+        v
+existing resources updated
+```
+
+rather than:
+
+```text
+Application update
+        |
+        v
+resources deleted and recreated
+```
+
+---
+
+# Controller Test: observedGeneration
+
+The integration test also waits until:
+
+```text
+metadata.generation
+```
+
+matches:
+
+```text
+status.observedGeneration
+```
+
+For example:
+
+```text
+metadata.generation       = 2
+status.observedGeneration = 2
+```
+
+This verifies that the operator has processed the latest Application specification.
 
 ---
 
@@ -1067,13 +1458,21 @@ Java-level tests can be introduced later where they provide faster or more focus
 
 Controller tests use a temporary namespace.
 
-Conceptually:
+For example:
 
 ```text
 platform-test-12345
 ```
 
-The test creates its Application and generated resources in that namespace.
+The test creates:
+
+```text
+Application
+Deployment
+Service
+```
+
+inside that namespace.
 
 At the end:
 
@@ -1084,13 +1483,79 @@ namespace deleted
 all test resources removed
 ```
 
-This avoids polluting:
+This keeps test runs isolated and avoids polluting the default namespace.
+
+---
+
+# Current Provisioning and Update Flow
+
+The current platform lifecycle is:
 
 ```text
-default
+Developer
+    |
+    v
+Application
+    |
+    v
+Platform Operator
+    |
+    +----------+
+    |          |
+    v          v
+Deployment   Service
+    ^          ^
+    |          |
+    +----------+
+         |
+Application updates
 ```
 
-with integration-test resources.
+More explicitly:
+
+```text
+Application created
+        |
+        v
+resources created
+        |
+        v
+Application updated
+        |
+        v
+same resources reconciled
+        |
+        v
+new desired state applied
+```
+
+---
+
+# Current Architecture
+
+```text
+                         Application
+                              |
+                              v
+                    ApplicationReconciler
+                              |
+               +--------------+--------------+
+               |                             |
+               v                             v
+          Deployment                      Service
+               |                             |
+               v                             |
+              Pods <-------------------------+
+               ^
+               |
+               |
+        Application update
+               |
+               v
+       desired state recalculated
+```
+
+The Application is now a true desired-state API rather than a one-time provisioning request.
 
 ---
 
@@ -1144,29 +1609,6 @@ scripts/
 
 ---
 
-# Current Architecture
-
-```text
-                       Application
-                            |
-                            v
-                  ApplicationReconciler
-                            |
-             +--------------+--------------+
-             |                             |
-             v                             v
-        Deployment                      Service
-             |                             |
-             v                             |
-            Pods <-------------------------+
-```
-
-The `Application` resource is now the source of desired state.
-
-The operator translates that higher-level desired state into Kubernetes resources.
-
----
-
 # Current Development Workflow
 
 A typical local flow is:
@@ -1185,7 +1627,7 @@ task platform-operator:deploy
 task application:create
 ```
 
-Then inspect:
+Inspect resources:
 
 ```bash
 kubectl get applications
@@ -1195,13 +1637,19 @@ kubectl get deployments
 kubectl get services
 ```
 
+Update the Application:
+
+```bash
+task application:update
+```
+
 Run API tests:
 
 ```bash
 task application:test:api
 ```
 
-Run controller tests:
+Run controller lifecycle tests:
 
 ```bash
 task application:test:controller
@@ -1209,13 +1657,28 @@ task application:test:controller
 
 ---
 
-# What This Version Does Not Prove Yet
+# What This Version Proves
 
-The current controller test proves:
+The current implementation and tests prove:
 
 ```text
-Application
-→ resources are provisioned correctly
+Application API can be validated
+
+Application creates Deployment
+
+Application creates Service
+
+generated resources match Application spec
+
+Application updates are reconciled
+
+Deployment is updated in place
+
+Service is updated in place
+
+Service identity remains stable
+
+observedGeneration catches up with generation
 ```
 
 It does not yet prove:
@@ -1225,69 +1688,85 @@ Pods become healthy
 
 Application becomes Ready
 
-Application updates propagate correctly
+Deployment rollout completes
 
-deleted resources are recreated
+failed rollout is reported
 
-Application deletion removes managed resources
+deleted dependent resources are repaired
 
-failure status works
+Application deletion cleans up resources
 
-retry behavior works
+configuration works
+
+Secrets work
 ```
 
-These will be added incrementally as those capabilities are implemented.
+Those will be introduced separately.
 
 ---
 
 # What's Next?
 
-The next important behavior is Application updates.
+The next important topic is workload readiness.
 
-For example:
-
-```yaml
-spec:
-  image: greeting-service:2.0.0
-  replicas: 3
-```
-
-should update the existing Deployment rather than create another one.
-
-The next lifecycle should look like:
+Right now the operator can say:
 
 ```text
-Application generation 1
-        |
-        v
-Deployment replicas = 1
-image = 1.0.0
-
-        |
-        | Application updated
-        v
-
-Application generation 2
-        |
-        v
-same Deployment
-replicas = 3
-image = 2.0.0
+I created or updated the Deployment.
 ```
 
-The matching integration test should verify the same behavior.
-
-After that, the platform can move toward:
+But it cannot yet say:
 
 ```text
-Application readiness
+The application is actually ready.
+```
+
+A Deployment update may result in:
+
+```text
+new ReplicaSet
+      |
+      v
+new Pods
+      |
+      +---- Running
+      |
+      +---- Pending
+      |
+      +---- ImagePullBackOff
+      |
+      +---- CrashLoopBackOff
+```
+
+So the next step is to observe Deployment status and define what:
+
+```text
+Application Ready
+```
+
+actually means.
+
+That will likely introduce:
+
+```text
+readyReplicas
+Ready condition
+Progressing condition
+Deployment status observation
+rollout-aware reconciliation
+```
+
+After that, the platform can continue toward:
+
+```text
 configuration
 Secrets
+health checks
 ApplicationRelease
-API dependencies
-Access grants
+ApiDependency
+AccessGrant
 networking
 authorization
 ```
 
-Capabilities will continue to be added only when the platform has a concrete use case for them.
+one capability at a time.

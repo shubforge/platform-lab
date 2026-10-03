@@ -27,6 +27,7 @@ spec:
           type: object
 
           properties:
+
             spec:
               type: object
 
@@ -35,6 +36,7 @@ spec:
                 - port
 
               properties:
+
                 image:
                   type: string
                   minLength: 1
@@ -51,6 +53,7 @@ spec:
                     - containerPort
 
                   properties:
+
                     containerPort:
                       type: integer
                       minimum: 1
@@ -60,6 +63,7 @@ spec:
               type: object
 
               properties:
+
                 observedGeneration:
                   type: integer
                   format: int64
@@ -73,11 +77,13 @@ spec:
                 readyReplicas:
                   type: integer
                   format: int32
+                  minimum: 0
 
                 conditions:
                   type: array
 
                   x-kubernetes-list-type: map
+
                   x-kubernetes-list-map-keys:
                     - type
 
@@ -87,8 +93,12 @@ spec:
                     required:
                       - type
                       - status
+                      - lastTransitionTime
+                      - reason
+                      - message
 
                     properties:
+
                       type:
                         type: string
 
@@ -117,9 +127,14 @@ spec:
         status: {}
 
       additionalPrinterColumns:
+
         - name: Ready
           type: string
           jsonPath: .status.conditions[?(@.type=="Ready")].status
+
+        - name: ReadyReplicas
+          type: integer
+          jsonPath: .status.readyReplicas
 
         - name: Image
           type: string

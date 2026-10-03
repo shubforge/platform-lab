@@ -4,6 +4,7 @@ vars:
   CLUSTER_NAME: platform-lab
   OPERATOR_IMAGE: greeting-operator:dev
   GREETING_NAME: hello
+  PLATFORM_OPERATOR_IMAGE: platform-operator:dev
 
 tasks:
   default:
@@ -191,3 +192,63 @@ tasks:
     desc: Test the Application API and CRD validation
     cmds:
       - bash ./scripts/tests/application-api-test.sh
+
+  application:test:controller:
+    desc: Test Application controller provisioning
+    cmds:
+      - bash ./scripts/tests/application-controller-test.sh
+
+  platform-operator:build:
+    desc: Build the Platform Operator
+    cmds:
+      - ./mvnw -f operators/platform-operator/pom.xml clean package
+
+  platform-operator:image:build:
+    desc: Build the Platform Operator Docker image
+    deps:
+      - platform-operator:build
+    cmds:
+      - docker build
+        -t {{.PLATFORM_OPERATOR_IMAGE}}
+        operators/platform-operator
+
+  platform-operator:image:load:
+    desc: Load the Platform Operator image into Kind
+    cmds:
+      - kind load docker-image
+        {{.PLATFORM_OPERATOR_IMAGE}}
+        --name {{.CLUSTER_NAME}}
+
+  platform-operator:deploy:
+    desc: Deploy the Platform Operator
+    cmds:
+      - kubectl apply -f k8s/platform-operator/namespace.yaml
+      - kubectl apply -f k8s/platform-operator/service-account.yaml
+      - kubectl apply -f k8s/platform-operator/rbac.yaml
+      - kubectl apply -f k8s/platform-operator/deployment.yaml
+
+  platform-operator:restart:
+    desc: Restart the Platform Operator
+    cmds:
+      - kubectl rollout restart
+        deployment/platform-operator
+        -n platform-system
+
+      - kubectl rollout status
+        deployment/platform-operator
+        -n platform-system
+
+  platform-operator:status:
+    desc: Show Platform Operator status
+    cmds:
+      - kubectl get pods
+        -n platform-system
+        -l app=platform-operator
+
+  platform-operator:logs:
+    desc: Follow Platform Operator logs
+    cmds:
+      - kubectl logs
+        -n platform-system
+        deployment/platform-operator
+        -f

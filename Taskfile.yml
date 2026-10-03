@@ -198,6 +198,21 @@ tasks:
     cmds:
       - bash ./scripts/tests/application-controller-test.sh
 
+  application:update:
+    desc: Update the sample Application
+    cmds:
+      - |
+        kubectl patch application greeting-service \
+          --type=merge \
+          -p '{
+            "spec": {
+              "image": "greeting-service:2.0.0",
+              "replicas": 3,
+              "port": {
+                "containerPort": 9090
+              }
+            }
+          }'
   platform-operator:build:
     desc: Build the Platform Operator
     cmds:

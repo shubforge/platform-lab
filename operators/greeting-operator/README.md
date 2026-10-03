@@ -2,19 +2,23 @@
 
 The Greeting Operator is the first Kubernetes operator built as part of Platform Lab.
 
-It is a small learning project used to understand:
+It is a small learning project used to understand Kubernetes operator concepts step by step.
+
+The operator currently covers:
 
 - Custom Resource Definitions
 - Java Operator SDK
-- Kubernetes controllers
-- dependent resources
+- controllers and dependent resources
+- reconciliation
 - status and conditions
 - ServiceAccounts and RBAC
-- failure handling
-- retry behavior
+- failure handling and retries
 - Kubernetes Events
 - manual reconciliation
 - event filtering
+- owner references
+- Kubernetes garbage collection
+- resource deletion behavior
 
 The operator is written in Java using the Java Operator SDK.
 
@@ -22,7 +26,7 @@ The operator is written in Java using the Java Operator SDK.
 
 ## Overview
 
-The custom resource looks like:
+A `Greeting` looks like:
 
 ```yaml
 apiVersion: platform.shubforge.dev/v1alpha1
@@ -67,13 +71,17 @@ data:
   message: "Hello from Platform Lab"
 ```
 
-The operator also reports its current state through `Greeting.status`.
+The operator also reports its current state through:
+
+```text
+Greeting.status
+```
 
 ---
 
 # API
 
-The Greeting API uses:
+The custom API uses:
 
 ```text
 Group:   platform.shubforge.dev
@@ -87,11 +95,11 @@ The CRD is defined in:
 k8s/crds/greetings.yaml
 ```
 
-The resource is namespace scoped.
+`Greeting` is a namespaced resource.
 
 ---
 
-## Specification
+# Specification
 
 The current specification contains:
 
@@ -119,13 +127,13 @@ spec:
 
 # Controller
 
-The primary reconciler is implemented in:
+The primary controller is implemented in:
 
 ```text
 GreetingReconciler.java
 ```
 
-The managed ConfigMap is implemented as a dependent resource:
+The ConfigMap is modeled as a managed dependent resource:
 
 ```text
 GreetingConfigMapDependentResource.java
@@ -158,7 +166,7 @@ protected ConfigMap desired(
 }
 ```
 
-The controller declares the desired resource instead of manually implementing separate create and update flows.
+The controller describes desired state instead of manually implementing separate create and update flows.
 
 ---
 
@@ -170,9 +178,7 @@ Example:
 
 ```yaml
 status:
-
   observedGeneration: 1
-
   configMapName: hello-greeting
 
   conditions:
@@ -182,13 +188,13 @@ status:
       message: Managed ConfigMap hello-greeting is in the desired state
 ```
 
-This allows the current state to be inspected without reading operator logs.
+This allows users to inspect the current state without checking operator logs.
 
 ---
 
 ## Spec vs Status
 
-A useful way to think about the resource is:
+A useful mental model is:
 
 ```text
 spec
@@ -204,23 +210,7 @@ status
 what the operator observed or achieved
 ```
 
-For example:
-
-```yaml
-spec:
-  message: "Hello from Platform Lab"
-```
-
-is provided by the user.
-
-The operator reports:
-
-```yaml
-status:
-  configMapName: hello-greeting
-```
-
-Conceptually:
+So:
 
 ```text
 User
@@ -239,16 +229,12 @@ status
 
 # observedGeneration
 
-Kubernetes maintains:
+Kubernetes tracks changes to desired configuration using:
 
 ```yaml
 metadata:
   generation:
 ```
-
-for the desired configuration.
-
-When the `spec` changes, the generation normally increases.
 
 The operator reports which generation it has processed using:
 
@@ -264,16 +250,7 @@ generation          = 2
 observedGeneration  = 2
 ```
 
-means the current status represents the latest desired state processed by the operator.
-
-If:
-
-```text
-generation          = 3
-observedGeneration  = 2
-```
-
-the desired state has changed, but the operator status still represents an older generation.
+means the operator has processed the current desired state.
 
 ---
 
@@ -281,29 +258,27 @@ the desired state has changed, but the operator status still represents an older
 
 The operator currently exposes a `Ready` condition.
 
-Successful reconciliation produces:
+Successful reconciliation:
 
 ```yaml
 conditions:
-
   - type: Ready
     status: "True"
     reason: ConfigMapReady
     message: Managed ConfigMap hello-greeting is in the desired state
 ```
 
-A failed reconciliation produces:
+Failed reconciliation:
 
 ```yaml
 conditions:
-
   - type: Ready
     status: "False"
     reason: ReconciliationFailed
     message: ...
 ```
 
-The resource can therefore move between:
+So the resource can move between:
 
 ```text
 Ready=True
@@ -315,15 +290,13 @@ and:
 Ready=False
 ```
 
-depending on reconciliation outcome.
+depending on the reconciliation result.
 
 ---
 
 # Failure Handling
 
-Failures during reconciliation are handled using the Java Operator SDK error-status mechanism.
-
-When reconciliation fails:
+A failed reconciliation updates status, records a Kubernetes Event, and allows the retry mechanism to run.
 
 ```text
 Greeting
@@ -332,26 +305,24 @@ Greeting
 Operator
     |
     v
-Exception
+Failure
     |
-    +------> Ready=False
+    +----> Ready=False
     |
-    +------> Warning Event
+    +----> Warning Event
     |
-    +------> Retry
+    +----> Retry
 ```
 
-The full exception is written to the operator logs.
+The full exception remains available in operator logs.
 
-The resource status receives a shorter user-facing error message.
+The resource status contains a shorter user-facing failure message.
 
 ---
 
 # Retry Behavior
 
-A failed reconciliation is retried automatically by the Java Operator SDK.
-
-Conceptually:
+Failed reconciliations are retried automatically.
 
 ```text
 reconcile
@@ -371,21 +342,9 @@ retry
 
 Retries are limited.
 
-During the RBAC failure experiment, Kubernetes Events showed:
+Once retries are exhausted, another relevant event is required before the resource is reconciled again.
 
-```text
-Warning  ReconciliationFailed  ... (x6 over ...)
-```
-
-which showed that the same reconciliation had failed multiple times.
-
-After the retry limit was reached, the operator waited for another relevant reconciliation trigger.
-
----
-
-# Retry vs Reconciliation Trigger
-
-These are two different concepts.
+This helped separate two concepts:
 
 ```text
 Retry
@@ -393,53 +352,34 @@ Retry
 another attempt after a failed reconciliation
 ```
 
-while:
+and:
 
 ```text
 Reconciliation trigger
 =
-something changed that causes the controller
+a new event that causes the controller
 to evaluate the resource again
 ```
-
-For example:
-
-```text
-Greeting spec changed
-        |
-        v
-new reconciliation
-```
-
-But changing an unrelated resource such as:
-
-```text
-ClusterRole
-```
-
-does not automatically trigger the Greeting controller.
-
-This became important when testing recovery from an RBAC failure.
 
 ---
 
 # Kubernetes Events
 
-The operator records Kubernetes Events for important reconciliation outcomes.
+The operator records Kubernetes Events for important outcomes.
 
-Successful reconciliation produces:
+Successful reconciliation:
 
 ```text
 Normal  Reconciled
 ```
 
-A failed reconciliation produces:
+Failed reconciliation:
 
 ```text
 Warning  ReconciliationFailed
 ```
 
-Events can be inspected using:
+Inspect them using:
 
 ```bash
 kubectl describe greeting hello
@@ -454,25 +394,13 @@ Events:
   Normal  Reconciled  5s (x2 over 2m12s) greetingreconciler  Managed ConfigMap hello-greeting is in the desired state
 ```
 
-The:
-
-```text
-x2
-```
-
-means Kubernetes aggregated two equivalent reconciliation Events.
+Repeated equivalent Events may be aggregated by Kubernetes.
 
 ---
 
 # Manual Reconciliation
 
-After testing failure recovery, one problem became clear.
-
-If automatic retries are exhausted and an external dependency is fixed later, such as RBAC, there may be no new event for the `Greeting` controller.
-
-Changing the `Greeting.spec` works, but changing business configuration only to trigger reconciliation is not ideal.
-
-The operator therefore supports an explicit manual reconciliation annotation:
+The operator supports an explicit manual reconciliation annotation:
 
 ```text
 platform.shubforge.dev/reconcile-at
@@ -486,59 +414,33 @@ kubectl annotate greeting hello \
   --overwrite
 ```
 
-The timestamp changes every time the command is executed.
+This requests another reconciliation without changing the desired `spec`.
 
-The operator detects that annotation change and reconciles the existing desired state again.
+The Taskfile provides:
 
----
-
-## Manual Reconcile Flow
-
-The flow looks like:
-
-```text
-External problem
-      |
-      v
-retries exhausted
-      |
-      v
-problem fixed
-      |
-      v
-reconcile-at annotation changed
-      |
-      v
-Greeting update event
-      |
-      v
-reconcile()
-      |
-      v
-resource evaluated again
+```bash
+task greeting:reconcile
 ```
 
-This allows reconciliation to be triggered without modifying:
+For another Greeting:
 
-```yaml
-spec:
+```bash
+task greeting:reconcile GREETING_NAME=<name>
 ```
 
 ---
 
 # Generation vs Manual Reconciliation
 
-Manual reconciliation does not change the desired configuration.
+A manual reconciliation only changes metadata.
 
-Because only metadata changes:
+It does not change:
 
 ```yaml
-metadata:
-  annotations:
-    platform.shubforge.dev/reconcile-at: ...
+spec:
 ```
 
-the resource generation remains unchanged.
+so the Kubernetes generation remains unchanged.
 
 For example:
 
@@ -547,41 +449,14 @@ generation          = 1
 observedGeneration  = 1
 ```
 
-before manual reconciliation.
+can remain exactly the same even after several manual reconciliations.
 
-After:
-
-```bash
-task greeting:reconcile
-```
-
-the resource can still show:
-
-```text
-generation          = 1
-observedGeneration  = 1
-```
-
-This is expected.
-
-The manual reconciliation means:
-
-```text
-Re-evaluate generation 1
-```
-
-not:
-
-```text
-There is a new desired state
-```
-
-This gives a useful distinction:
+The distinction is:
 
 ```text
 generation
 =
-version of desired spec
+version of the desired specification
 ```
 
 while:
@@ -589,361 +464,633 @@ while:
 ```text
 reconcile-at
 =
-request to re-evaluate that desired spec
+request to evaluate the current specification again
 ```
 
 ---
 
-# Greeting Update Filter
+# Update Filtering
 
-The operator uses a custom update filter.
-
-The goal is to reconcile when:
-
-```text
-spec generation changes
-```
-
-or when:
-
-```text
-reconcile-at annotation changes
-```
-
-but ignore updates such as status changes that should not create another reconciliation loop.
-
-Conceptually:
-
-```text
-generation changed?
-       |
-       yes
-       |
-       v
-   reconcile
-
-
-reconcile-at changed?
-       |
-       yes
-       |
-       v
-   reconcile
-
-
-status/resourceVersion only changed?
-       |
-       no
-       |
-       v
-    ignore
-```
-
-The filter is implemented in:
+The controller uses:
 
 ```text
 GreetingUpdateFilter.java
 ```
 
-Conceptually, the logic is:
+to decide which primary resource updates should trigger reconciliation.
+
+The controller reconciles when:
+
+```text
+Greeting.spec changes
+```
+
+or when:
+
+```text
+platform.shubforge.dev/reconcile-at changes
+```
+
+Conceptually:
 
 ```java
 return generationChanged(newResource, oldResource)
-        || reconcileAnnotationChanged(newResource, oldResource);
+        || reconcileAnnotationChanged(
+                newResource,
+                oldResource
+        );
 ```
 
-This prevents every metadata or status update from automatically triggering reconciliation.
+Updates caused only by status changes are ignored by this filter.
+
+This helps avoid unnecessary reconciliation loops.
 
 ---
 
-# Manual Reconciliation with Taskfile
+# Resource Ownership
 
-A Taskfile command is available:
+The ConfigMap created by the operator is a dependent resource of the `Greeting`.
 
-```bash
-task greeting:reconcile
-```
-
-The command updates:
+The lifecycle relationship is:
 
 ```text
-platform.shubforge.dev/reconcile-at
+Greeting
+   |
+   | owns
+   v
+ConfigMap
 ```
 
-with the current timestamp.
-
-By default it reconciles:
-
-```text
-hello
-```
-
-A different Greeting can be selected using:
+Inspect the generated ConfigMap:
 
 ```bash
-task greeting:reconcile GREETING_NAME=failure-test
+kubectl get configmap hello-greeting -o yaml
 ```
 
-or:
-
-```bash
-task greeting:reconcile GREETING_NAME=manual-reconcile-test
-```
-
----
-
-# Testing Manual Reconciliation
-
-Run:
-
-```bash
-task greeting:reconcile
-```
-
-Then inspect the annotation:
-
-```bash
-kubectl get greeting hello \
-  -o jsonpath='{.metadata.annotations.platform\.shubforge\.dev/reconcile-at}'
-```
-
-Check Events:
-
-```bash
-kubectl describe greeting hello
-```
-
-Example:
-
-```text
-Normal  Reconciled  5s (x2 over 2m12s)
-```
-
-The Event count increasing confirms that another reconciliation occurred.
-
-The generation can still remain:
-
-```text
-1
-```
-
-because the desired `spec` did not change.
-
----
-
-# Testing Recovery Using Manual Reconciliation
-
-A useful failure experiment is to remove ConfigMap creation permission temporarily.
-
-Edit the ClusterRole:
-
-```bash
-kubectl edit clusterrole greeting-operator
-```
-
-Temporarily change:
+The current operator produces metadata like:
 
 ```yaml
-verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-```
-
-to:
-
-```yaml
-verbs:
-  - get
-  - list
-  - watch
-```
-
-Verify:
-
-```bash
-kubectl auth can-i \
-  create configmaps \
-  --namespace default \
-  --as=system:serviceaccount:platform-system:greeting-operator
-```
-
-Expected:
-
-```text
-no
-```
-
-Create a test Greeting:
-
-```bash
-kubectl apply -f - <<'EOF'
-apiVersion: platform.shubforge.dev/v1alpha1
-kind: Greeting
-
 metadata:
-  name: manual-reconcile-test
+  labels:
+    app.kubernetes.io/managed-by: greeting-operator
 
-spec:
-  message: "Manual reconciliation test"
-EOF
+  ownerReferences:
+    - apiVersion: platform.shubforge.dev/v1alpha1
+      kind: Greeting
+      name: hello
+      uid: ...
+      controller: false
+      blockOwnerDeletion: false
 ```
 
-The operator will fail to create the ConfigMap.
-
-Eventually:
-
-```bash
-kubectl get greeting manual-reconcile-test
-```
-
-should show:
+The important part is:
 
 ```text
-READY
-False
+ownerReferences
+```
+
+This creates an ownership relationship between:
+
+```text
+Greeting/hello
+```
+
+and:
+
+```text
+ConfigMap/hello-greeting
+```
+
+---
+
+# Understanding the Owner Reference
+
+The ConfigMap contains:
+
+```yaml
+ownerReferences:
+  - apiVersion: platform.shubforge.dev/v1alpha1
+    kind: Greeting
+    name: hello
+    uid: ...
+```
+
+The `uid` is particularly important.
+
+Kubernetes does not identify the owner only by:
+
+```text
+kind + name
+```
+
+It also tracks the unique identity of that specific resource.
+
+So the relationship is effectively:
+
+```text
+ConfigMap
+    |
+    | owned by
+    v
+Greeting UID
+```
+
+This prevents a newly created resource with the same name from automatically becoming the owner of an old dependent.
+
+---
+
+# controller: false
+
+The current owner reference contains:
+
+```yaml
+controller: false
+```
+
+This does not mean the ConfigMap has no owner.
+
+The ownership relationship still exists.
+
+The `controller` field has a more specific meaning: it identifies an owner reference as the managing controller reference.
+
+The current dependent resource uses a normal owner reference:
+
+```text
+Greeting
+    |
+    | ownerReference
+    v
+ConfigMap
+```
+
+For the lifecycle behavior being explored here, the important part is that the owner reference exists.
+
+---
+
+# blockOwnerDeletion: false
+
+The current owner reference also contains:
+
+```yaml
+blockOwnerDeletion: false
+```
+
+This controls whether this dependent should block deletion of the owner during foreground deletion.
+
+For the simple Greeting and ConfigMap relationship, the ConfigMap does not need to prevent the Greeting from being deleted.
+
+The relationship can still be used by Kubernetes garbage collection.
+
+---
+
+# Owner and Dependent Resources
+
+For the current operator:
+
+```text
+Owner
+=
+Greeting
+```
+
+and:
+
+```text
+Dependent
+=
+ConfigMap
+```
+
+The ownership information is stored on the dependent:
+
+```text
+Greeting
+    |
+    | ownerReference
+    v
+ConfigMap
+```
+
+This allows Kubernetes to understand that the two resource lifecycles are related.
+
+---
+
+# Deleting the Managed ConfigMap
+
+First create the Greeting:
+
+```bash
+task greeting:create
+```
+
+Verify both resources:
+
+```bash
+kubectl get greeting hello
 ```
 
 and:
 
 ```bash
-kubectl describe greeting manual-reconcile-test
+kubectl get configmap hello-greeting
 ```
 
-should show `ReconciliationFailed` Events.
-
----
-
-# Recovering Without Changing Spec
-
-Restore the repository RBAC configuration:
+Now delete only the ConfigMap:
 
 ```bash
-task operator:deploy
+kubectl delete configmap hello-greeting
 ```
 
-Verify:
+The Greeting still exists.
 
-```bash
-kubectl auth can-i \
-  create configmaps \
-  --namespace default \
-  --as=system:serviceaccount:platform-system:greeting-operator
-```
-
-Expected:
+The desired state therefore still says:
 
 ```text
-yes
-```
-
-Instead of modifying `spec`, trigger reconciliation manually:
-
-```bash
-task greeting:reconcile \
-  GREETING_NAME=manual-reconcile-test
-```
-
-The flow becomes:
-
-```text
-RBAC fixed
-      |
-      v
-manual reconcile requested
-      |
-      v
-reconcile-at changes
-      |
-      v
-GreetingUpdateFilter
-      |
-      v
-reconcile()
-      |
-      v
-ConfigMap created
-      |
-      v
-Ready=True
-```
-
-Verify:
-
-```bash
-kubectl get greeting manual-reconcile-test
-```
-
-and:
-
-```bash
-kubectl get configmap manual-reconcile-test-greeting
-```
-
-Then inspect Events:
-
-```bash
-kubectl describe greeting manual-reconcile-test
-```
-
-You should see the failed history followed by a successful reconciliation.
-
----
-
-# Logs vs Status vs Events
-
-The operator now exposes information through three different mechanisms.
-
-```text
-Logs
-=
-developer/operator debugging
-```
-
-```text
-Status
-=
-current resource state
-```
-
-```text
-Events
-=
-important resource history
-```
-
-For example:
-
-```text
-Exception stack trace
+Greeting exists
         |
         v
-Operator Logs
+ConfigMap should exist
+```
+
+The dependent resource event causes the controller to reconcile and recreate the ConfigMap.
+
+Check again:
+
+```bash
+kubectl get configmap hello-greeting
+```
+
+The ConfigMap should exist again.
+
+The lifecycle is:
+
+```text
+ConfigMap deleted
+       |
+       v
+Greeting still exists
+       |
+       v
+desired state still requires ConfigMap
+       |
+       v
+operator reconciles
+       |
+       v
+ConfigMap recreated
+```
+
+---
+
+# Deleting the Greeting
+
+Now test the opposite direction.
+
+Start with:
+
+```text
+Greeting/hello
+ConfigMap/hello-greeting
+```
+
+You can inspect both:
+
+```bash
+kubectl get greeting hello
+kubectl get configmap hello-greeting
+```
+
+Then delete only the owner:
+
+```bash
+kubectl delete greeting hello
+```
+
+Check:
+
+```bash
+kubectl get greeting hello
+```
+
+Then:
+
+```bash
+kubectl get configmap hello-greeting
+```
+
+Once Kubernetes garbage collection completes, the ConfigMap should no longer exist.
+
+The flow is:
+
+```text
+Greeting deleted
+      |
+      v
+owner reference becomes invalid
+      |
+      v
+Kubernetes garbage collector
+      |
+      v
+dependent ConfigMap deleted
+```
+
+The controller does not need to manually execute:
+
+```java
+deleteConfigMap();
+```
+
+for this Kubernetes-owned dependent.
+
+---
+
+# Watching Garbage Collection
+
+One useful way to observe the lifecycle is to watch the ConfigMap.
+
+In one terminal:
+
+```bash
+kubectl get configmap hello-greeting -w
+```
+
+In another terminal:
+
+```bash
+kubectl delete greeting hello
+```
+
+This makes it easier to see when the dependent disappears.
+
+You can also watch both resources:
+
+```bash
+kubectl get greeting,configmap -w
+```
+
+---
+
+# Two Different Delete Scenarios
+
+These two experiments look similar but behave differently.
+
+## Delete the dependent
+
+```bash
+kubectl delete configmap hello-greeting
+```
+
+The owner still exists:
+
+```text
+Greeting
+   |
+   v
+still present
+```
+
+The desired state still requires the ConfigMap.
+
+So:
+
+```text
+ConfigMap deleted
+        |
+        v
+operator observes change
+        |
+        v
+reconcile
+        |
+        v
+ConfigMap recreated
+```
+
+---
+
+## Delete the owner
+
+```bash
+kubectl delete greeting hello
+```
+
+Now the source of the desired state disappears.
+
+So:
+
+```text
+Greeting deleted
+        |
+        v
+owner reference
+        |
+        v
+Kubernetes garbage collection
+        |
+        v
+ConfigMap removed
+```
+
+The operator should not keep recreating the ConfigMap because the `Greeting` itself no longer exists.
+
+---
+
+# Kubernetes Garbage Collection
+
+Owner references allow Kubernetes garbage collection to clean up dependent Kubernetes resources.
+
+For this operator:
+
+```text
+Greeting
+    |
+    v
+ConfigMap
+```
+
+When the owner is removed:
+
+```text
+delete Greeting
+      |
+      v
+Kubernetes finds dependent
+      |
+      v
+delete ConfigMap
+```
+
+This gives us Kubernetes-native lifecycle management without writing explicit cleanup code for every dependent Kubernetes object.
+
+---
+
+# Reconciliation vs Garbage Collection
+
+This experiment demonstrates two different mechanisms.
+
+When the dependent is deleted:
+
+```text
+ConfigMap deleted
+      |
+      v
+reconciliation
+      |
+      v
+ConfigMap recreated
+```
+
+When the owner is deleted:
+
+```text
+Greeting deleted
+      |
+      v
+garbage collection
+      |
+      v
+ConfigMap removed
+```
+
+So:
+
+```text
+Reconciliation
+=
+maintain desired state while the owner exists
 ```
 
 while:
 
 ```text
-Ready=False
-ReconciliationFailed
-        |
-        v
-Greeting Status
+Garbage collection
+=
+remove dependents when their owner disappears
+```
+
+These mechanisms work together.
+
+---
+
+# Namespaces and Ownership
+
+`Greeting` is namespaced.
+
+The managed ConfigMap is created in the same namespace.
+
+For example:
+
+```text
+default/hello
+      |
+      v
+default/hello-greeting
 ```
 
 and:
 
 ```text
-Warning ReconciliationFailed
-Normal Reconciled
-        |
-        v
-Kubernetes Events
+demo/hello
+      |
+      v
+demo/hello-greeting
 ```
+
+The dependent resource uses the Greeting namespace when building the ConfigMap.
+
+Conceptually:
+
+```java
+var namespace =
+        greeting.getMetadata().getNamespace();
+```
+
+and:
+
+```java
+.withNamespace(namespace)
+```
+
+This keeps the owner and namespaced dependent together.
+
+---
+
+# Owner References vs Finalizers
+
+Owner references and finalizers solve different lifecycle problems.
+
+## Owner reference
+
+An owner reference says:
+
+```text
+This Kubernetes resource belongs to another Kubernetes resource.
+```
+
+For example:
+
+```text
+Greeting
+    |
+    v
+ConfigMap
+```
+
+Kubernetes garbage collection can clean up the ConfigMap when the Greeting is removed.
+
+---
+
+## Finalizer
+
+A finalizer says:
+
+```text
+Do not completely remove this resource yet.
+The controller still has cleanup work to do.
+```
+
+This becomes useful when cleanup cannot be handled automatically by Kubernetes.
+
+For example:
+
+```text
+Custom Resource
+      |
+      v
+External API
+      |
+      v
+External Resource
+```
+
+Kubernetes does not know how to delete something in an external system.
+
+That is where a finalizer can help.
+
+---
+
+# Deletion Propagation
+
+Kubernetes supports different deletion propagation strategies.
+
+For example:
+
+```bash
+kubectl delete greeting hello \
+  --cascade=background
+```
+
+or:
+
+```bash
+kubectl delete greeting hello \
+  --cascade=foreground
+```
+
+The details differ in when the owner and dependents are removed.
+
+For this stage of the project, the important idea is that the ownership relationship gives Kubernetes enough information to manage the dependent lifecycle.
 
 ---
 
@@ -975,7 +1122,7 @@ ClusterRole
 Kubernetes API
 ```
 
-The current permissions allow the operator to:
+The operator currently has permissions to:
 
 ```text
 get/list/watch Greetings
@@ -1061,6 +1208,12 @@ Check Events:
 task greeting:events
 ```
 
+Inspect the managed ConfigMap:
+
+```bash
+task greeting:configmap
+```
+
 Manually reconcile:
 
 ```bash
@@ -1073,7 +1226,7 @@ Manually reconcile another Greeting:
 task greeting:reconcile GREETING_NAME=<name>
 ```
 
-Delete:
+Delete the Greeting:
 
 ```bash
 task greeting:delete
@@ -1081,9 +1234,55 @@ task greeting:delete
 
 ---
 
-# Current Reconciliation Triggers
+# Testing the Resource Lifecycle
 
-The controller currently reacts to several kinds of situations.
+A useful experiment is:
+
+```bash
+task greeting:create
+```
+
+Verify the ConfigMap:
+
+```bash
+task greeting:configmap
+```
+
+Then delete only the ConfigMap:
+
+```bash
+kubectl delete configmap hello-greeting
+```
+
+Check again:
+
+```bash
+kubectl get configmap hello-greeting
+```
+
+The ConfigMap should be recreated.
+
+Now delete the Greeting:
+
+```bash
+task greeting:delete
+```
+
+Finally check:
+
+```bash
+kubectl get configmap hello-greeting
+```
+
+The ConfigMap should eventually no longer exist.
+
+This demonstrates both reconciliation and Kubernetes garbage collection.
+
+---
+
+# Current Reconciliation and Lifecycle Flow
+
+The operator now supports several lifecycle paths.
 
 ## Desired state change
 
@@ -1097,13 +1296,13 @@ generation changes
 reconcile
 ```
 
-## Managed resource event
+## Manual reconciliation
 
 ```text
-ConfigMap changes/disappears
+reconcile-at changes
        |
        v
-dependent resource event
+update filter
        |
        v
 reconcile
@@ -1118,29 +1317,39 @@ reconciliation fails
 automatic retry
 ```
 
-## Manual reconciliation
+## Dependent resource deletion
 
 ```text
-reconcile-at annotation changes
+ConfigMap deleted
        |
        v
-GreetingUpdateFilter
+Greeting still exists
        |
        v
 reconcile
+       |
+       v
+ConfigMap recreated
 ```
 
-These are different mechanisms, even though they all eventually lead to:
+## Owner deletion
 
 ```text
-reconcile()
+Greeting deleted
+       |
+       v
+ownerReference
+       |
+       v
+Kubernetes garbage collection
+       |
+       v
+ConfigMap deleted
 ```
 
 ---
 
 # Current Architecture
-
-The controller flow now looks like:
 
 ```text
                          Greeting
@@ -1149,29 +1358,36 @@ The controller flow now looks like:
               |                           |
           spec change              reconcile-at change
               |                           |
-              v                           v
-      generation change             update filter
-              |                           |
               +-------------+-------------+
                             |
                             v
                        reconcile()
                             |
-                     +------+------+
-                     |             |
-                  success        failure
-                     |             |
-                     v             v
-                 ConfigMap     Ready=False
-                     |             |
-                     v             v
-                 Ready=True    Warning Event
-                     |             |
-                     v             v
-               Normal Event       Retry
+                            v
+                        ConfigMap
+                            |
+             +--------------+--------------+
+             |                             |
+      ConfigMap deleted             Greeting deleted
+             |                             |
+             v                             v
+        reconcile                   garbage collection
+             |                             |
+             v                             v
+      ConfigMap recreated            ConfigMap removed
 ```
 
-The operator now supports both automatic and explicit reconciliation triggers.
+The operator now demonstrates both:
+
+```text
+desired-state reconciliation
+```
+
+and:
+
+```text
+ownership-based lifecycle management
+```
 
 ---
 
@@ -1217,34 +1433,54 @@ k8s/
 
 # What's Next?
 
-Manual reconciliation solves one specific problem:
+The current dependent resource exists entirely inside Kubernetes.
+
+Because of that, owner references and Kubernetes garbage collection can handle most of its lifecycle cleanup.
+
+The next topic is:
 
 ```text
-external issue fixed
-+
-automatic retries exhausted
-+
-no relevant resource event
-```
-
-The next topics can now focus on reconciliation behavior in more depth:
-
-```text
-reconciliation best practices
-periodic reconciliation
-rescheduling
-idempotency
-external dependency handling
-```
-
-After that, the operator lifecycle can be expanded with:
-
-```text
-owner references
-resource deletion
 finalizers
+```
+
+Finalizers become useful when deletion requires work that Kubernetes cannot perform automatically.
+
+For example:
+
+```text
+Greeting deletion requested
+        |
+        v
+deletionTimestamp set
+        |
+        v
+controller performs cleanup
+        |
+        v
+finalizer removed
+        |
+        v
+Greeting deletion completes
+```
+
+That will let the project explore the difference between:
+
+```text
+Kubernetes-owned cleanup
+```
+
+and:
+
+```text
+controller-managed cleanup
+```
+
+After that, the next areas include:
+
+```text
 integration tests
 GitHub Actions
+higher-level platform APIs
 ```
 
-The Greeting Operator now supports both normal desired-state reconciliation and an explicit way to request another reconciliation when needed.
+The Greeting Operator now demonstrates reconciliation, failure recovery, manual reconciliation, resource ownership, and Kubernetes-native garbage collection.
